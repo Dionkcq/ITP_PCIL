@@ -28,7 +28,7 @@ from pathlib import Path
 import joblib
 import pandas as pd
 
-from pcil.utils.anomaly.normalise import PerMachineNormaliser
+from pcil.utils.anomaly.non_cyclical.normalise import PerMachineNormaliser
 from pcil.utils.anomaly.cyclical.slice import detect_cycles
 from pcil.utils.anomaly.cyclical.features import extract_features, stack_features
 from pcil.utils.anomaly.cyclical.model import (

@@ -1,51 +1,45 @@
 """
-Non-cyclical anomaly pipeline — Step 1: fixed window slicing
-=============================================================
-Non-cyclical data (vibration RMS, acoustic emission, temperature)
-doesn't have natural cycle boundaries — chop into fixed-length windows.
+Why fixed windows instead of event-based slicing?
+  Non-cyclical data (vibration, acoustic, temperature) has no natural
+  repeat boundary. Fixed windows are the simplest, most predictable way
+  to turn a stream into discrete observations a model can learn from.
 
-Pick ONE window length with reasoning:
-  - 0.1 s @ 25.6 kHz = 2560 samples per window
-  - 0.5 s @ 25.6 kHz = 12800 samples per window
-  - 1.0 s @ 25.6 kHz = 25600 samples per window
+Why 0.5 s as the default?
+  At 25.6 kHz, 0.5 s = 12 800 rows — enough samples for RMS, kurtosis,
+  and crest-factor to be statistically meaningful, while short enough
+  that a transient fault won't be averaged away.
 
-Document your choice in non_cyclical/README.md.
+Generalisation note:
+  This module is signal-agnostic. The same window logic works for any
+  continuous sensor stream (temperature, current, pressure). Only the
+  window_size_rows argument needs tuning for different sample rates or
+  anomaly time-scales.
 """
 
-from __future__ import annotations
-
-from typing import Iterator
-
+from typing import Generator
 import pandas as pd
-
 
 def detect_windows(
     df: pd.DataFrame,
     *,
     window_size_rows: int,
     stride: int | None = None,
-) -> Iterator[tuple[int, int]]:
-    """
-    Yield (start_idx, end_idx) tuples — one per fixed-length window.
+) -> Generator[tuple[int, int], None, None]:
+    if window_size_rows <= 0:
+        raise ValueError(f"window_size_rows must be positive, got {window_size_rows}")
 
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Sorted ascending. Single-machine slice.
-    window_size_rows : int
-        Number of rows per window.
-    stride : int | None
-        Step between window starts. None means non-overlapping
-        (stride = window_size_rows).
+    _stride = stride if stride is not None else window_size_rows
 
-    Yields
-    ------
-    (start_idx, end_idx) : tuple[int, int]
-        Half-open: df.iloc[start_idx:end_idx] is one window.
+    if _stride <= 0:
+        raise ValueError(f"stride must be positive, got {_stride}")
 
-    TODO (teammate):
-      1. Decide on stride default (non-overlapping is simplest).
-      2. Iterate from 0 to len(df) - window_size_rows in steps of `stride`.
-      3. Edge case: drop the trailing partial window or pad it.
-    """
-    raise NotImplementedError("TODO: implement detect_windows")
+    n = len(df)
+    start = 0
+
+    while start + window_size_rows <= n:
+        yield start, start + window_size_rows
+        start += _stride
+
+    # Trailing rows that don't fill a full window are silently dropped.
+    # Rationale: a partial window produces unreliable statistics
+    # (especially kurtosis), so it's safer to discard than to pad.

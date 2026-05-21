@@ -28,6 +28,9 @@ env/
 Thumbs.db
 desktop.ini
 
+# Data files
+data/
+
 # Notes
 # - machines/*/output/ IS tracked on purpose: golden_dataframe.csv and
 #   context_model.pkl are real deliverables for Winardi's review.
