@@ -1,18 +1,41 @@
 """
-Pipeline #2 v0 — Context Model (Linear Regression)
-==================================================
-Reads the Golden DataFrame produced by preprocess.py, pushes it
-through the adapter, fits a multi-target linear regression, and
-writes:
-  - context_model_impacts.json  (Pipeline #2 output schema)
-  - context_model.pkl            (the trained model, ready to reuse)
+Pipeline #2 — Context Model (Linear Regression baseline)
+========================================================
+Two entry points:
+
+  1. `train_context_model_from_df(golden_df, cfg)` — importable function.
+     Used by the orchestrator. Returns (impacts_dict, fitted_model).
+
+  2. CLI (this file as a script) — wraps the function for one-off runs.
+     Reads the Golden DataFrame from disk, fits the model, saves both
+     `context_model.pkl` and `context_model_impacts.json`.
+
+The impacts JSON follows the Week-3 schema agreed with Winardi on
+2026-05-22 (`deliverables/Week3/todo.md` §1.3.1):
+    system / model / fitted_at
+    context_window: { start_time, end_time, row_count, feature_count, target_count }
+    context: [ { target, intercept, ranked_feature_impacts: [...] } ]
+
+Each entry in `ranked_feature_impacts` carries: feature name, a one-line
+description (pulled from `config.yaml -> feature_descriptions`), the raw
+coefficient, a standardised share-of-explanation, and an absolute-magnitude
+rank within the target.
 
 Run from PCIL_dev/:
-    python pcil/train_context_model.py                # default: inkjet_printer
-    python pcil/train_context_model.py oil_filler     # by machine name
+    python -m pcil.train_context_model                # default: inkjet_printer
+    python -m pcil.train_context_model oil_filler     # by machine name
 """
 
 from __future__ import annotations
+
+# Allow `python pcil/train_context_model.py` AND `python -m pcil.train_context_model`.
+# When invoked as a plain script there is no parent package, so `from pcil.xxx`
+# imports fail. Promote ourselves into the `pcil` package in that case.
+if __name__ == "__main__" and __package__ in (None, ""):
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    __package__ = "pcil"
 
 import io
 import json
@@ -25,11 +48,103 @@ import pandas as pd
 import yaml
 from sklearn.linear_model import LinearRegression
 
-from adapter import adapt, column_names_from_config
+from pcil.adapter import adapt, column_names_from_config
 
-# UTF-8 stdout for Windows
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
+# ─────────────────────────────────────────────────────────────
+# Core function (orchestrator + CLI both call this)
+# ─────────────────────────────────────────────────────────────
+
+def train_context_model_from_df(
+    golden_df: pd.DataFrame,
+    cfg: dict,
+) -> tuple[dict, LinearRegression]:
+    """Fit a multi-target LinearRegression on a Golden DataFrame.
+
+    Returns
+    -------
+    (impacts, model)
+        impacts : dict matching the Week-3 schema (system, model, fitted_at,
+                  context_window, context[].ranked_feature_impacts[]).
+        model   : the fitted sklearn LinearRegression.
+    """
+    targets, features = column_names_from_config(cfg, golden_df)
+    bundle = adapt(golden_df, targets, features)
+    X, y = bundle["X"], bundle["y"]
+
+    model = LinearRegression().fit(X, y)
+
+    timestamp_col = cfg["input"]["timestamp_column"]
+    timestamps = pd.to_datetime(golden_df[timestamp_col])
+
+    feature_descriptions = cfg.get("feature_descriptions", {}) or {}
+    system_name = cfg.get("system") or cfg.get("machine") or "unknown_system"
+
+    context_blocks = []
+    for i, target_name in enumerate(targets):
+        raw = {feat: float(coef) for feat, coef in zip(features, model.coef_[i])}
+        sum_abs = sum(abs(c) for c in raw.values()) or 1.0
+
+        # Rank by absolute magnitude (most-impactful feature is rank 1).
+        ranked = sorted(raw.items(), key=lambda kv: abs(kv[1]), reverse=True)
+
+        ranked_impacts = [
+            {
+                "feature": feat,
+                "description": feature_descriptions.get(feat, ""),
+                "raw_impact_score": coef,
+                "standardized_impact_score": coef / sum_abs,
+                "rank": rank,
+            }
+            for rank, (feat, coef) in enumerate(ranked, start=1)
+        ]
+
+        context_blocks.append({
+            "target": target_name,
+            "intercept": float(model.intercept_[i]),
+            "ranked_feature_impacts": ranked_impacts,
+        })
+
+    impacts = {
+        "system": system_name,
+        "model": "linear_regression",
+        "fitted_at": datetime.now(timezone.utc).isoformat(),
+        "context_window": {
+            "start_time": timestamps.min().isoformat(),
+            "end_time": timestamps.max().isoformat(),
+            "row_count": int(bundle["n_rows"]),
+            "feature_count": int(len(features)),
+            "target_count": int(len(targets)),
+        },
+        "context": context_blocks,
+    }
+
+    return impacts, model
+
+
+def save_artifacts(
+    impacts: dict,
+    model: LinearRegression,
+    output_dir: Path,
+    feature_names: list[str],
+    target_names: list[str],
+) -> tuple[Path, Path]:
+    """Persist impacts JSON + fitted model to disk. Returns the two paths."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_path = output_dir / "context_model_impacts.json"
+    pkl_path = output_dir / "context_model.pkl"
+    json_path.write_text(json.dumps(impacts, indent=2), encoding="utf-8")
+    joblib.dump({
+        "model": model,
+        "feature_names": feature_names,
+        "target_names": target_names,
+    }, pkl_path)
+    return json_path, pkl_path
+
+
+# ─────────────────────────────────────────────────────────────
+# CLI wrapper
+# ─────────────────────────────────────────────────────────────
 
 def _resolve_machine(arg: str | None) -> Path:
     repo_root = Path(__file__).resolve().parent.parent  # PCIL_dev/
@@ -42,6 +157,8 @@ def _resolve_machine(arg: str | None) -> Path:
 
 
 def main():
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+
     arg = sys.argv[1] if len(sys.argv) > 1 else None
     cfg_path = _resolve_machine(arg)
     if not cfg_path.is_file():
@@ -51,7 +168,6 @@ def main():
     cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
     machine_dir = cfg_path.parent
     output_dir = (machine_dir / cfg["pipeline"]["output_dir"]).resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
 
     csv_path = output_dir / "golden_dataframe.csv"
     if not csv_path.exists():
@@ -59,67 +175,31 @@ def main():
         print(f"Run preprocess.py first.")
         raise SystemExit(1)
 
-    df = pd.read_csv(csv_path)
+    golden_df = pd.read_csv(csv_path)
+    impacts, model = train_context_model_from_df(golden_df, cfg)
 
-    # 1. Adapt — derive features from the Golden DataFrame columns so we
-    # capture any post-OneHotEncoder column expansion correctly.
-    targets, features = column_names_from_config(cfg, df)
-    bundle = adapt(df, targets, features)
-    X, y = bundle["X"], bundle["y"]
-
-    # 2. Fit multi-target linear regression
-    model = LinearRegression().fit(X, y)
-
-    # 3. Build per-target impact blocks
-    timestamp_col = cfg["input"]["timestamp_column"]
-    timestamps = pd.to_datetime(df[timestamp_col])
-    time_from = timestamps.min().isoformat()
-    time_to   = timestamps.max().isoformat()
-
-    blocks = []
-    for i, target_name in enumerate(targets):
-        blocks.append({
-            "time_from": time_from,
-            "time_to":   time_to,
-            "target":    target_name,
-            "intercept": float(model.intercept_[i]),
-            "feature_impacts": {
-                feat: float(coef)
-                for feat, coef in zip(features, model.coef_[i])
-            },
-        })
-
-    out = {
-        "model":      "linear_regression",
-        "machine":    machine_dir.name,
-        "fitted_at":  datetime.now(timezone.utc).isoformat(),
-        "n_rows":     bundle["n_rows"],
-        "n_features": len(features),
-        "n_targets":  len(targets),
-        "blocks":     blocks,
-    }
-
-    # 4. Save artefacts
-    json_path = output_dir / "context_model_impacts.json"
-    pkl_path  = output_dir / "context_model.pkl"
-    json_path.write_text(json.dumps(out, indent=2), encoding="utf-8")
-    joblib.dump({
-        "model":         model,
-        "feature_names": features,
-        "target_names":  targets,
-    }, pkl_path)
+    targets, features = column_names_from_config(cfg, golden_df)
+    json_path, pkl_path = save_artifacts(
+        impacts, model, output_dir,
+        feature_names=features,
+        target_names=targets,
+    )
 
     print(f"Wrote {json_path}")
     print(f"Wrote {pkl_path}")
     print()
-    print("Linear-regression feature impacts (per target):")
-    print(f"  features: {features}")
-    print(f"  targets:  {targets}")
+    print(f"System:  {impacts['system']}")
+    print(f"Model:   {impacts['model']}")
+    print(f"Window:  {impacts['context_window']['row_count']} rows "
+          f"({impacts['context_window']['start_time']} -> "
+          f"{impacts['context_window']['end_time']})")
     print()
-    for block in blocks:
+    for block in impacts["context"]:
         print(f"  Target: {block['target']}   (intercept {block['intercept']:+.4f})")
-        for feat, coef in block["feature_impacts"].items():
-            print(f"    {feat:<32s} {coef:+.4f}")
+        for fi in block["ranked_feature_impacts"]:
+            print(f"    [{fi['rank']}] {fi['feature']:<28s} "
+                  f"raw={fi['raw_impact_score']:+.4f}  "
+                  f"std={fi['standardized_impact_score']:+.4f}")
         print()
 
 

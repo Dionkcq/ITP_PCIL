@@ -1,0 +1,21 @@
+# Keep the build context small + reproducible.
+__pycache__/
+*.py[cod]
+*.egg-info/
+.git/
+.gitignore
+
+# Dev-only artifacts — not needed at runtime, mount data/ instead.
+triggered_slices/
+*.pkl
+*.joblib
+
+# Editor / OS noise.
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Don't bake docs into the image.
+*.md
+!machines/*/README.md

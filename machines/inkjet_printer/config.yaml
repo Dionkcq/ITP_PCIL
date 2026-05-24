@@ -1,18 +1,42 @@
 # ============================================================
-# PCIL Pipeline #1 — config.yaml
+# PCIL Pipeline #1 — config.yaml  (Week-3 schema)
 # ============================================================
 # Describes the contract between the shop-floor DataFrame slice
-# (input) and the Golden DataFrame (output).
+# (input) and the Golden DataFrame (output), plus the trigger
+# parameters the orchestrator uses to pull the slice.
 #
-# This file is DataFrame-tied, not machine-tied: the schema below
-# describes the columns Pipeline #1 expects to receive from the
-# shop-floor database (via the trigger). The same shape applies to
-# every machine that feeds into the shared shop-floor DB.
+# This file is the "recipe" — pass its path to the orchestrator's
+# /pipeline/run API and the orchestrator follows the instructions
+# in here end to end.
+#
+# Multiple recipes can live side by side (config_time.yaml,
+# config_last_n.yaml) for different experiments.
 # ============================================================
+
+# ── System identity ─────────────────────────────────────────
+# Goes into context_model_impacts.json -> "system". Use a name
+# that describes the scope (single machine, full lab, project).
+system: inkjet_printer
 
 # ── Pipeline settings ───────────────────────────────────────
 pipeline:
   output_dir: "output"            # relative to this config file's parent
+
+# ── Trigger / slice parameters ──────────────────────────────
+# How the orchestrator pulls a window from the shop-floor source.
+#   mode = "all"        -> use the whole source (default)
+#   mode = "time_range" -> slice between start_time and end_time
+#   mode = "last_n"     -> take the last N rows
+#
+# `source` is the data location. For now this is a CSV path
+# (mock shop-floor). Once the engineering team has a real DB
+# it would be a connection string + query instead.
+trigger:
+  source: "../../../data/mock_shop_floor.csv"
+  mode: "all"
+  start_time: null              # ISO 8601 UTC, e.g. "2026-05-15T09:00:30+00:00"
+  end_time: null                # ISO 8601 UTC
+  last_n: null                  # positive integer
 
 # ── Input schema: shop-floor DataFrame slice ────────────────
 # What the trigger pulls from the shop-floor DB. The preprocessing
@@ -29,6 +53,8 @@ input:
     - acoustic_emission
     - setpressure_cycle_count
     - setvelo_mean
+    - cyclical_anomaly_score
+    - acoustic_anomaly_score
 
   # Categorical context columns. Each becomes one or more one-hot
   # features in the Golden DataFrame after OneHotEncoder.
@@ -42,6 +68,20 @@ input:
     - performance
     - quality
     - oee
+
+# ── Feature descriptions (for the impacts JSON + LLM) ───────
+# One short, plain-English line per feature. The orchestrator
+# attaches these to ranked_feature_impacts so the LLM doesn't
+# have to guess what e.g. "setpressure_cycle_count" means.
+feature_descriptions:
+  air_pressure_low_ratio: "Proportion of operating time during which air pressure falls below the defined threshold."
+  cycle_stop_present: "Whether a cycle interruption event occurred during the observation window (0 or 1)."
+  vibration: "Aggregated vibration signal (RMS over the window) from the machine accelerometer."
+  acoustic_emission: "Aggregated acoustic emission signal (RMS over the window) from the AE sensor."
+  setpressure_cycle_count: "Number of distinct pressure setpoint changes observed in the window."
+  setvelo_mean: "Mean commanded velocity setpoint over the observation window."
+  cyclical_anomaly_score: "Anomaly score from the cyclical pipeline, aggregated to the canonical row rate."
+  acoustic_anomaly_score: "Anomaly score from the non-cyclical / acoustic pipeline, aggregated to the canonical row rate."
 
 # ── Output: Golden DataFrame ────────────────────────────────
 # The contract Pipeline #2 (adapter + context model) reads.

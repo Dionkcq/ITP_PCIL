@@ -28,23 +28,16 @@ Design choice: Isolation Forest
 
 from __future__ import annotations
 
-from typing import Protocol
-
 import numpy as np
 
-
-class AnomalyModel(Protocol):
-    """The interface every candidate satisfies."""
-
-    def fit(self, X: np.ndarray) -> "AnomalyModel": ...
-    def score(self, X: np.ndarray) -> np.ndarray: ...
+from pcil.utils.anomaly.base import AnomalyModel
 
 
 # ─────────────────────────────────────────────────────────────
 # Candidate 1: Z-score baseline (no training, pure statistics)
 # ─────────────────────────────────────────────────────────────
 
-class ZScoreModel:
+class ZScoreModel(AnomalyModel):
     """
     Flag rows whose maximum absolute z-score across features exceeds
     `threshold`. "Trains" by storing the training set's per-feature
@@ -56,7 +49,7 @@ class ZScoreModel:
         self.mu_: np.ndarray | None = None
         self.sigma_: np.ndarray | None = None
 
-    def fit(self, X: np.ndarray) -> "ZScoreModel":
+    def fit(self, X: np.ndarray, y: np.ndarray | None = None) -> "ZScoreModel":
         raise NotImplementedError("ZScoreModel not selected — use IsolationForestModel.")
 
     def score(self, X: np.ndarray) -> np.ndarray:
@@ -67,7 +60,7 @@ class ZScoreModel:
 # Candidate 2: Isolation Forest (sklearn)  ← SELECTED
 # ─────────────────────────────────────────────────────────────
 
-class IsolationForestModel:
+class IsolationForestModel(AnomalyModel):
     """
     Wraps sklearn.ensemble.IsolationForest. Higher `score` = more anomalous.
 
@@ -85,7 +78,11 @@ class IsolationForestModel:
         params.update(kwargs)
         self._model = IsolationForest(**params)
 
-    def fit(self, X: np.ndarray) -> "IsolationForestModel":
+    def fit(
+        self,
+        X: np.ndarray,
+        y: np.ndarray | None = None,  # ignored — unsupervised
+    ) -> "IsolationForestModel":
         """Fit the isolation forest on normal training cycles."""
         self._model.fit(X)
         return self
@@ -103,14 +100,14 @@ class IsolationForestModel:
 # Candidate 3: One-class SVM (sklearn)
 # ─────────────────────────────────────────────────────────────
 
-class OneClassSVMModel:
+class OneClassSVMModel(AnomalyModel):
     """Wraps sklearn.svm.OneClassSVM. Higher `score` = more anomalous."""
 
     def __init__(self, **kwargs):
         from sklearn.svm import OneClassSVM
         self._model = OneClassSVM(**kwargs)
 
-    def fit(self, X: np.ndarray) -> "OneClassSVMModel":
+    def fit(self, X: np.ndarray, y: np.ndarray | None = None) -> "OneClassSVMModel":
         raise NotImplementedError("OneClassSVMModel not selected — use IsolationForestModel.")
 
     def score(self, X: np.ndarray) -> np.ndarray:
@@ -121,7 +118,7 @@ class OneClassSVMModel:
 # Candidate 4: Autoencoder (sketch — pick a NN library)
 # ─────────────────────────────────────────────────────────────
 
-class AutoencoderModel:
+class AutoencoderModel(AnomalyModel):
     """
     Reconstruction-error anomaly detector.
     Not selected for Week 2 — Isolation Forest is sufficient.
@@ -130,7 +127,7 @@ class AutoencoderModel:
     def __init__(self, **kwargs):
         self._kwargs = kwargs
 
-    def fit(self, X: np.ndarray) -> "AutoencoderModel":
+    def fit(self, X: np.ndarray, y: np.ndarray | None = None) -> "AutoencoderModel":
         raise NotImplementedError("AutoencoderModel not selected — use IsolationForestModel.")
 
     def score(self, X: np.ndarray) -> np.ndarray:

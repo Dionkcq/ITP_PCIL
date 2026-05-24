@@ -1,6 +1,9 @@
 import numpy as np
 
-class RandomForestModel:
+from pcil.utils.anomaly.base import AnomalyModel
+
+
+class RandomForestModel(AnomalyModel):
     """
     Supervised anomaly classifier.
     Trains on clean (label=0) and anomaly (label=1) windows.
@@ -15,7 +18,13 @@ class RandomForestModel:
             class_weight="balanced",
         )
 
-    def fit(self, X: np.ndarray, y: np.ndarray) -> "RandomForestModel":
+    def fit(
+        self,
+        X: np.ndarray,
+        y: np.ndarray | None = None,
+    ) -> "RandomForestModel":
+        if y is None:
+            raise ValueError("RandomForestModel.fit requires labels y.")
         self._model.fit(X, y)
         return self
 

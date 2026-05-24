@@ -1,13 +1,17 @@
 """
 Anomaly detection utilities.
 
-Each data type lives in its own subpackage with the same four-step structure:
-    slice.py     — turn a raw stream into discrete units (cycles or windows)
-    features.py  — turn each unit into a fixed-size feature vector
-    model.py     — candidate anomaly models (z-score, IF, OCSVM, autoencoder)
-    train.py     — CLI: dataset -> trained .pkl
-    score.py     — CLI: data + .pkl -> anomaly_score column
+Layout:
+    base.py       — shared AnomalyModel ABC + PerMachineNormaliser
+    cyclical/     — opinionated cyclical pipeline (Daniel + Jaymon)
+    non_cyclical/ — opinionated non-cyclical pipeline (Zi Hin)
 
-Shared:
-    normalise.py — per-machine z-score helper fitted inside each trained bundle
+Each subpackage exposes:
+    score(df, bundle) -> DataFrame    — entry point the orchestrator calls
+    a model class inheriting AnomalyModel
+    a {subpackage}_config.yaml         — recipe for that pipeline
+
+The orchestrator dispatches /anomaly/score to the matching subpackage by
+`model_type`. Each subpackage is internally free to use whatever slicing,
+features, and model it wants — only the public interface is shared.
 """

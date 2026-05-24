@@ -5,15 +5,29 @@ import joblib
 import pandas as pd
 import yaml
 
-# Make sure ITP_PCIL/ is on the path
+# Two roots — kept separate because they aren't always the same directory.
+#
+#   PACKAGE_ROOT: parent of pcil/. Always parents[3] of this script. Added to
+#                 sys.path so absolute imports like `from pcil.xxx` resolve.
+#
+#   ROOT_DIR (data root): where the `data/` folder lives. On Zi Hin's PCIL/
+#                 clone this is also parents[3]; on our PCIL_dev/ sandbox it
+#                 is parents[4] (one level higher, in ITP/). Pick the first
+#                 candidate that actually has data/ on disk.
 SCRIPT_DIR = Path(__file__).resolve().parent
-ROOT_DIR   = SCRIPT_DIR.parents[3]
-sys.path.insert(0, str(ROOT_DIR))
+PACKAGE_ROOT = SCRIPT_DIR.parents[3]
+sys.path.insert(0, str(PACKAGE_ROOT))
 
-from pcil.utils.anomaly.non_cyclical.score import load_acoustic
+_data_candidates = [PACKAGE_ROOT, PACKAGE_ROOT.parent]
+ROOT_DIR = next(
+    (p for p in _data_candidates if (p / "data").is_dir()),
+    PACKAGE_ROOT,
+)
+
+from pcil.utils.anomaly.non_cyclical.score import load_acoustic, score
 from pcil.utils.anomaly.non_cyclical.features import extract_features, stack_features, DEFAULT_FEATURE_NAMES, CHANNEL_COLUMNS
 from pcil.utils.anomaly.non_cyclical.slice import detect_windows
-from pcil.utils.anomaly.non_cyclical.normalise import PerMachineNormaliser
+from pcil.utils.anomaly.base import PerMachineNormaliser
 from pcil.utils.anomaly.non_cyclical.model import RandomForestModel
 
 with open(SCRIPT_DIR / "non_cyclical_config.yaml") as f:
@@ -111,15 +125,21 @@ joblib.dump(bundle, output_model)
 print(f"Model saved -> {output_model}")
 
 # ── Step 4: Score test split ──────────────────────────────────────────────────
+# Use the public score() function from score.py — same path the orchestrator
+# (and engineer-facing API) calls. Verifies the production scoring path end
+# to end on labelled test data.
 print("=" * 60)
-print("STEP 4 — Scoring test split (unseen data)")
+print("STEP 4 — Scoring test split (unseen data) via score.score()")
 print("=" * 60)
 
-scores_clean_test   = model.score(feat_clean_test_n[feature_cols].to_numpy())
-scores_anomaly_test = model.score(feat_anomaly_test_n[feature_cols].to_numpy())
+scored_clean_test   = score(clean_test,   bundle)
+scored_anomaly_test = score(anomaly_test, bundle)
 
-pd.DataFrame({"anomaly_score": scores_clean_test}).to_csv(output_clean_scored,   index=False)
-pd.DataFrame({"anomaly_score": scores_anomaly_test}).to_csv(output_anomaly_scored, index=False)
+scores_clean_test   = scored_clean_test["anomaly_score"].to_numpy()
+scores_anomaly_test = scored_anomaly_test["anomaly_score"].to_numpy()
+
+scored_clean_test[["window_start_idx", "anomaly_score"]].to_csv(output_clean_scored,   index=False)
+scored_anomaly_test[["window_start_idx", "anomaly_score"]].to_csv(output_anomaly_scored, index=False)
 print(f"Saved -> {output_clean_scored}")
 print(f"Saved -> {output_anomaly_scored}")
 

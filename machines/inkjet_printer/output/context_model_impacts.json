@@ -1,7 +1,7 @@
 {
   "model": "linear_regression",
   "machine": "inkjet_printer",
-  "fitted_at": "2026-05-08T14:45:51.620991+00:00",
+  "fitted_at": "2026-05-08T13:57:18.060163+00:00",
   "n_rows": 625,
   "n_features": 6,
   "n_targets": 4,
