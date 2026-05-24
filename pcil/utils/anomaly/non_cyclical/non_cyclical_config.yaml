@@ -1,0 +1,17 @@
+# Non-cyclical anomaly detection pipeline config
+# Edit this file to change settings.
+ 
+data:
+  input_clean:          "data/Inkjet Printer Data Collection/Acoustic Sensor Data/machine_on_clean.csv"
+  input_anomaly:        "data/Inkjet Printer Data Collection/Acoustic Sensor Data/machine_on_anomaly.csv"
+  output_model:         "data/non_cyclical_inkjet_01.pkl"
+  output_clean_scored:  "data/non_cyclical_clean_scored.csv"
+  output_anomaly_scored: "data/non_cyclical_anomaly_scored.csv"
+ 
+machine:
+  machine_id:      "inkjet_01"
+  header_skiprows: 5
+ 
+model:
+  window_size_rows: 12800   # 0.5s at 25.6 kHz
+  train_ratio:      0.8     # 80% train, 20% test

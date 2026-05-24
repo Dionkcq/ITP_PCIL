@@ -1,62 +1,103 @@
-"""
-Non-cyclical anomaly pipeline — Step 2: per-window feature extraction
-======================================================================
-Turn each fixed-length window into a fixed-size feature vector. Acoustic
-data has 4 channels (Acceleration 0/1/2 + AE) — extract features per
-channel and concatenate.
-
-Pick ONE feature set:
-  - Time-domain: RMS, peak, std, kurtosis, crest factor (per channel)
-  - Frequency-domain: FFT band energies (e.g. 0–1 kHz, 1–5 kHz, 5–10 kHz) per channel
-  - Both concatenated
-
-Document your choice + which features in non_cyclical/README.md.
-"""
-
-from __future__ import annotations
-
+import numpy as np
 import pandas as pd
-
-CHANNEL_COLUMNS = [
+from scipy.stats import kurtosis as scipy_kurtosis
+ 
+# ---------------------------------------------------------------------------
+# Default channel columns for the acoustic sensor CSV.
+# Override at call-time for different sensor configurations.
+# ---------------------------------------------------------------------------
+CHANNEL_COLUMNS: list[str] = [
     "Acceleration 0 (g)",
     "Acceleration 1 (g)",
     "Acceleration 2 (g)",
     "AE (V) (V)",
 ]
-
-
+ 
+# ---------------------------------------------------------------------------
+# Feature registry — add new features here without touching extract_features.
+# ---------------------------------------------------------------------------
+FEATURE_REGISTRY: dict[str, callable] = {
+    # Core vibration/acoustic features
+    "rms": lambda x: float(np.sqrt(np.mean(x ** 2))),
+    "peak": lambda x: float(np.max(np.abs(x))),
+    "std": lambda x: float(np.std(x)),
+    "kurtosis": lambda x: float(scipy_kurtosis(x, fisher=True, bias=True)),
+    "crest_factor": lambda x: float(
+        np.max(np.abs(x)) / (np.sqrt(np.mean(x ** 2)) + 1e-9)
+    ),
+    # Additional features for slow-moving signals (temperature, pressure)
+    "mean": lambda x: float(np.mean(x)),
+    "gradient_mean": lambda x: float(np.mean(np.abs(np.diff(x)))),
+    "integrated_area": lambda x: float(np.trapz(np.abs(x))),
+    "fft_band_low":  lambda x: float(np.sum(np.abs(np.fft.rfft(x))[:len(x)//16])),   # 0–800 Hz
+    "fft_band_mid":  lambda x: float(np.sum(np.abs(np.fft.rfft(x))[len(x)//16:len(x)//4])),  # 800–3.2 kHz
+    "fft_band_high": lambda x: float(np.sum(np.abs(np.fft.rfft(x))[len(x)//4:])),     # 3.2 kHz+
+}
+ 
+# Default feature set — optimised for vibration/acoustic signals.
+# For temperature or pressure sensors, consider ["mean", "std", "gradient_mean"].
+DEFAULT_FEATURE_NAMES: list[str] = [
+    "rms",
+    "peak",
+    "std",
+    "kurtosis",
+    "crest_factor",
+    "fft_band_low",
+    "fft_band_mid",
+    "fft_band_high"
+]
+ 
+ 
+def _col_to_prefix(col: str) -> str:
+    # Convert a column name to a short, safe prefix for feature naming.
+    
+    col = col.lower()
+    col = col.replace("acceleration", "accel")
+    col = col.replace("ae (v)", "ae")
+    # Remove unit suffixes and parentheses
+    for ch in "()":
+        col = col.replace(ch, "")
+    # Collapse whitespace to underscore
+    col = "_".join(col.split())
+    return col
+ 
+ 
 def extract_features(
     window_df: pd.DataFrame,
     *,
     channel_columns: list[str] = CHANNEL_COLUMNS,
-) -> dict[str, float]:
-    """
-    Return a dict mapping feature_name -> float for one window.
+    feature_names: list[str] = DEFAULT_FEATURE_NAMES,) -> dict[str, float]:
 
-    Naming convention: include the channel name, e.g.
-        "accel_0_rms": ..., "ae_fft_band_0_1khz": ...
+    unknown = set(feature_names) - set(FEATURE_REGISTRY)
+    if unknown:
+        raise ValueError(
+            f"Unknown feature(s): {unknown}. "
+            f"Available: {list(FEATURE_REGISTRY)}"
+        )
+ 
+    features: dict[str, float] = {}
+ 
+    for col in channel_columns:
+        if col not in window_df.columns:
+            raise KeyError(
+                f"Column '{col}' not found in window_df. "
+                f"Available columns: {list(window_df.columns)}"
+            )
+        prefix = _col_to_prefix(col)
+        vals = window_df[col].to_numpy(dtype=float)
+ 
+        if len(vals) == 0:
+            raise ValueError(f"Empty window passed to extract_features (column '{col}').")
+ 
+        for feat_name in feature_names:
+            features[f"{prefix}_{feat_name}"] = FEATURE_REGISTRY[feat_name](vals)
+ 
+    return features
+ 
+ 
+def stack_features(rows: list[dict]) -> pd.DataFrame:
+    # Convert a list of feature dicts (one per window) into a DataFrame.
 
-    Parameters
-    ----------
-    window_df : pd.DataFrame
-        One window's rows (already sliced upstream).
-    channel_columns : list[str]
-        Which columns to extract features from.
-
-    Returns
-    -------
-    dict[str, float]
-        Same keys for every window (so downstream stacks correctly).
-
-    TODO (teammate):
-      1. Pick a feature set.
-      2. For each channel in channel_columns, compute and add features
-         with channel-prefixed names.
-      3. NaN-safe.
-    """
-    raise NotImplementedError("TODO: pick and implement feature extraction.")
-
-
-def stack_features(per_window_dicts: list[dict[str, float]]) -> pd.DataFrame:
-    """Stack per-window feature dicts into one DataFrame (one row per window)."""
-    return pd.DataFrame(per_window_dicts)
+    if not rows:
+        raise ValueError("No feature rows to stack — is the input DataFrame empty?")
+    return pd.DataFrame(rows)
