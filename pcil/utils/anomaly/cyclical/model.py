@@ -12,11 +12,18 @@ Candidates
   OneClassSVMModel     — classic anomaly detector.
   AutoencoderModel     — heaviest, most flexible.
 
-Spec each pick must include in cyclical/README.md
--------------------------------------------------
-  - loss function (or "n/a" for IF / OCSVM)
-  - optimiser (NN only)
-  - stopping criterion
+Design choice: Isolation Forest
+---------------------------------
+  - Trains unsupervised on normal cycles only — no anomaly labels needed.
+  - Randomly partitions the feature space into isolation trees. Anomalous
+    cycles sit in sparse regions and get isolated in fewer splits, giving
+    them a higher anomaly score.
+  - Sklearn-native, no neural net, no hyperparameter tuning required for
+    a first pass.
+  - Loss function : n/a (tree-based, not gradient-based)
+  - Optimiser     : n/a
+  - Stopping criterion : fixed n_estimators (100 trees by default);
+    no iterative training loop.
 """
 
 from __future__ import annotations
@@ -42,11 +49,6 @@ class ZScoreModel:
     Flag rows whose maximum absolute z-score across features exceeds
     `threshold`. "Trains" by storing the training set's per-feature
     mean and std.
-
-    The fitted PerMachineNormaliser inside this machine's bundle already
-    normalises features before this model sees them. This model performs
-    a second-level aggregation that turns many normalised features into
-    one anomaly score.
     """
 
     def __init__(self, threshold: float = 3.0):
@@ -55,34 +57,46 @@ class ZScoreModel:
         self.sigma_: np.ndarray | None = None
 
     def fit(self, X: np.ndarray) -> "ZScoreModel":
-        """TODO (teammate): self.mu_, self.sigma_ = X.mean(axis=0), X.std(axis=0); guard against zero std."""
-        raise NotImplementedError("TODO: ZScoreModel.fit")
+        raise NotImplementedError("ZScoreModel not selected — use IsolationForestModel.")
 
     def score(self, X: np.ndarray) -> np.ndarray:
-        """TODO (teammate): return per-row max |(X - mu) / sigma| as the anomaly score."""
-        raise NotImplementedError("TODO: ZScoreModel.score")
+        raise NotImplementedError("ZScoreModel not selected — use IsolationForestModel.")
 
 
 # ─────────────────────────────────────────────────────────────
-# Candidate 2: Isolation Forest (sklearn)
+# Candidate 2: Isolation Forest (sklearn)  ← SELECTED
 # ─────────────────────────────────────────────────────────────
 
 class IsolationForestModel:
     """
     Wraps sklearn.ensemble.IsolationForest. Higher `score` = more anomalous.
+
+    Default kwargs:
+      n_estimators=100  — number of isolation trees
+      contamination=0.05 — expected fraction of anomalies in training data
+      random_state=42   — reproducibility
     """
 
     def __init__(self, **kwargs):
         from sklearn.ensemble import IsolationForest
-        self._model = IsolationForest(**kwargs)
+
+        # Sensible defaults — caller can override via kwargs
+        params = {"n_estimators": 100, "contamination": 0.05, "random_state": 42}
+        params.update(kwargs)
+        self._model = IsolationForest(**params)
 
     def fit(self, X: np.ndarray) -> "IsolationForestModel":
-        """TODO (teammate): self._model.fit(X); return self."""
-        raise NotImplementedError("TODO: IsolationForestModel.fit")
+        """Fit the isolation forest on normal training cycles."""
+        self._model.fit(X)
+        return self
 
     def score(self, X: np.ndarray) -> np.ndarray:
-        """TODO (teammate): return -self._model.score_samples(X) so higher = more anomalous."""
-        raise NotImplementedError("TODO: IsolationForestModel.score")
+        """
+        Return per-row anomaly score where higher = more anomalous.
+        sklearn's score_samples returns negative values (more negative = more anomalous),
+        so we negate to make the direction intuitive.
+        """
+        return -self._model.score_samples(X)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -97,11 +111,10 @@ class OneClassSVMModel:
         self._model = OneClassSVM(**kwargs)
 
     def fit(self, X: np.ndarray) -> "OneClassSVMModel":
-        raise NotImplementedError("TODO: OneClassSVMModel.fit")
+        raise NotImplementedError("OneClassSVMModel not selected — use IsolationForestModel.")
 
     def score(self, X: np.ndarray) -> np.ndarray:
-        """Return -self._model.score_samples(X) so higher = more anomalous."""
-        raise NotImplementedError("TODO: OneClassSVMModel.score")
+        raise NotImplementedError("OneClassSVMModel not selected — use IsolationForestModel.")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -111,23 +124,14 @@ class OneClassSVMModel:
 class AutoencoderModel:
     """
     Reconstruction-error anomaly detector.
-
-    Spec MUST be written in cyclical/README.md:
-      - layers + bottleneck size
-      - activation functions
-      - loss function (e.g. MSE)
-      - optimiser (e.g. Adam, lr=1e-3)
-      - stopping criterion (e.g. early stop on val MSE plateau)
-      - choice of NN library (PyTorch / Keras / sklearn MLPRegressor wrapper)
+    Not selected for Week 2 — Isolation Forest is sufficient.
     """
 
     def __init__(self, **kwargs):
-        # TODO (teammate): build the architecture per the README spec.
         self._kwargs = kwargs
 
     def fit(self, X: np.ndarray) -> "AutoencoderModel":
-        raise NotImplementedError("TODO: AutoencoderModel.fit")
+        raise NotImplementedError("AutoencoderModel not selected — use IsolationForestModel.")
 
     def score(self, X: np.ndarray) -> np.ndarray:
-        """Return per-row reconstruction error (e.g. MSE)."""
-        raise NotImplementedError("TODO: AutoencoderModel.score")
+        raise NotImplementedError("AutoencoderModel not selected — use IsolationForestModel.")
