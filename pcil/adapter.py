@@ -69,10 +69,13 @@ def adapt(
         bad = feats.columns[feats.isna().any()].tolist()
         raise ValueError(f"adapter: feature columns contain NaN: {bad}")
 
-    # 2b. Range check
+    # 2b. Range check. Tolerate ~1e-9 floating-point overshoot from
+    # MinMaxScaler — on small inputs the scaler can produce values like
+    # 1.0000000000000002 that should logically be 1.0.
+    EPS = 1e-9
     fmin = float(feats.min().min())
     fmax = float(feats.max().max())
-    if fmin < 0.0 or fmax > 1.0:
+    if fmin < -EPS or fmax > 1.0 + EPS:
         raise ValueError(
             f"adapter: feature values outside [0, 1] "
             f"(min={fmin:.4f}, max={fmax:.4f})"

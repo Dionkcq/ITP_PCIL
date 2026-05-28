@@ -35,7 +35,9 @@ from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import MinMaxScaler, OneHotEncoder
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+# Note: sys.stdout reassignment for UTF-8 lives inside main() now (not at
+# module level) so importing this module doesn't break pytest's stdout
+# capture — same pattern train_context_model.py uses.
 
 
 # ─────────────────────────────────────────────────────────────
@@ -185,6 +187,8 @@ def print_summary(golden: pd.DataFrame, cfg: dict) -> None:
 # ─────────────────────────────────────────────────────────────
 
 def main():
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+
     parser = argparse.ArgumentParser(
         description="PCIL Pipeline #1 — shop-floor slice -> Golden DataFrame.",
         formatter_class=argparse.RawDescriptionHelpFormatter,

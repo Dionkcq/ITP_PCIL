@@ -11,14 +11,19 @@ Two endpoint groups:
     POST /pipeline/run        — full pipeline: pull slice -> preprocess
                                  -> adapter -> context model -> impacts.
                                  RAG + LLM are placeholders for now.
+    POST /pipeline/run_csv    — same flow, but the slice arrives as an
+                                 uploaded CSV instead of via config.yaml's
+                                 trigger.source. For engineers who have
+                                 a one-off CSV from the factory floor.
     POST /pipeline/save_csv   — pull a slice and write
                                  `context_window_<start>_<end>.csv`.
                                  Optional; not called during /run.
 
-  /anomaly/*     Engineer-facing API for anomaly scoring.
+  /anomaly/*     Engineer-facing APIs.
+    POST /anomaly/train       — train + persist a model bundle from
+                                 uploaded CSVs.
     POST /anomaly/score       — input: time-series data + model_type.
-                                 Output: anomaly score.
-                                 STUB: teammates' models still in progress.
+                                 Output: anomaly score per window/cycle.
 
 Run from PCIL_dev/:
     pip install -r requirements.txt
@@ -29,6 +34,7 @@ OpenAPI / Swagger UI:  http://localhost:8000/docs
 
 from __future__ import annotations
 
+import io
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,7 +43,7 @@ from typing import Any, Literal
 import joblib
 import pandas as pd
 import yaml
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from pcil.adapter import adapt, column_names_from_config
@@ -188,6 +194,87 @@ def _pull_slice(cfg: dict) -> pd.DataFrame:
     raise HTTPException(status_code=400, detail=f"unknown trigger.mode: {mode}")
 
 
+async def _read_upload_to_df(upload: UploadFile) -> pd.DataFrame:
+    """Read a FastAPI UploadFile into a pandas DataFrame.
+
+    Raises HTTPException(400) if the file is empty, can't be parsed as
+    CSV, or parses to an empty DataFrame. Keeps the error messages
+    user-friendly for engineers calling the API.
+    """
+    contents = await upload.read()
+    if not contents:
+        raise HTTPException(
+            status_code=400,
+            detail=f"uploaded file '{upload.filename}' is empty",
+        )
+    try:
+        df = pd.read_csv(io.BytesIO(contents))
+    except Exception as exc:  # noqa: BLE001 — surface any pandas parse error
+        raise HTTPException(
+            status_code=400,
+            detail=f"could not parse '{upload.filename}' as CSV: {exc}",
+        ) from exc
+    if df.empty:
+        raise HTTPException(
+            status_code=400,
+            detail=f"uploaded CSV '{upload.filename}' contained no rows",
+        )
+    return df
+
+
+def _run_pipeline_on_df(
+    slice_df: pd.DataFrame,
+    cfg: dict,
+    *,
+    persist: bool,
+) -> dict:
+    """Shared pipeline execution: preprocess -> adapter -> context model.
+
+    Used by both /pipeline/run (data from config.trigger.source) and
+    /pipeline/run_csv (data from upload). Keeping the body in one place
+    means we can't drift between the two entry points.
+
+    Schema mismatches (missing columns, NaN values, features out of
+    range) get surfaced to the caller as HTTP 400 — they're client-side
+    input problems, not server crashes.
+    """
+    if slice_df.empty:
+        raise HTTPException(
+            status_code=400,
+            detail="input slice is empty; nothing to process",
+        )
+
+    try:
+        golden_df, _fitted_preprocessor = preprocess(slice_df, cfg)
+        targets, features = column_names_from_config(cfg, golden_df)
+        _bundle = adapt(golden_df, targets, features)
+        impacts, model = train_context_model_from_df(golden_df, cfg)
+    except ValueError as exc:
+        # preprocess/adapter raise ValueError on schema problems. Convert
+        # to a clean 400 instead of leaking a 500 with a stack trace.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    artifact_paths: dict[str, str] = {}
+    if persist:
+        json_path, pkl_path = save_artifacts(
+            impacts, model, cfg["_paths"]["output"],
+            feature_names=features, target_names=targets,
+        )
+        artifact_paths = {"impacts_json": str(json_path), "model_pkl": str(pkl_path)}
+
+    return {
+        "status": "ok",
+        "input_rows": int(len(slice_df)),
+        "golden_rows": int(len(golden_df)),
+        "impacts": impacts,
+        "recovery_records": [],  # Pipeline #3 (RAG) — Robin
+        "operator_recommendation": (
+            "<LLM composer not wired yet — see deliverables/Week3/todo.md>"
+        ),
+        "artifacts": artifact_paths,
+    }
+
+
 def _context_window_filename(slice_df: pd.DataFrame, timestamp_col: str) -> str:
     """Build the filename Winardi specified: context_window_<start>_<end>.csv."""
     if timestamp_col not in slice_df.columns or slice_df.empty:
@@ -210,8 +297,15 @@ def root() -> dict:
         "service": "PCIL Job Orchestrator",
         "version": app.version,
         "endpoints": {
-            "pipeline": ["POST /pipeline/run", "POST /pipeline/save_csv"],
-            "anomaly": ["POST /anomaly/score"],
+            "pipeline": [
+                "POST /pipeline/run",
+                "POST /pipeline/run_csv",
+                "POST /pipeline/save_csv",
+            ],
+            "anomaly": [
+                "POST /anomaly/train",
+                "POST /anomaly/score",
+            ],
             "docs": "GET /docs",
         },
     }
@@ -231,40 +325,42 @@ def run_pipeline(req: RunPipelineRequest) -> dict:
     Returns the impacts dict plus a placeholder LLM recommendation.
     """
     _, cfg = _resolve_config(req.config_path)
-
     slice_df = _pull_slice(cfg)
-    if slice_df.empty:
-        raise HTTPException(
-            status_code=400,
-            detail="trigger returned 0 rows; check trigger parameters",
-        )
+    return _run_pipeline_on_df(slice_df, cfg, persist=req.persist)
 
-    golden_df, _fitted_preprocessor = preprocess(slice_df, cfg)
 
-    targets, features = column_names_from_config(cfg, golden_df)
-    _bundle = adapt(golden_df, targets, features)
-
-    impacts, model = train_context_model_from_df(golden_df, cfg)
-
-    artifact_paths: dict[str, str] = {}
-    if req.persist:
-        json_path, pkl_path = save_artifacts(
-            impacts, model, cfg["_paths"]["output"],
-            feature_names=features, target_names=targets,
-        )
-        artifact_paths = {"impacts_json": str(json_path), "model_pkl": str(pkl_path)}
-
-    return {
-        "status": "ok",
-        "input_rows": int(len(slice_df)),
-        "golden_rows": int(len(golden_df)),
-        "impacts": impacts,
-        "recovery_records": [],  # Pipeline #3 (RAG) — Robin
-        "operator_recommendation": (
-            "<LLM composer not wired yet — see deliverables/Week3/todo.md>"
+@app.post("/pipeline/run_csv", tags=["pipeline"])
+async def run_pipeline_csv(
+    file: UploadFile = File(
+        ...,
+        description="Shop-floor CSV slice. Same schema config.yaml expects.",
+    ),
+    config_path: str = Form(
+        "machines/inkjet_printer/config.yaml",
+        description="Config recipe path — relative to orchestrator's CWD.",
+    ),
+    persist: bool = Form(
+        False,
+        description=(
+            "If true, also write context_model.pkl + impacts JSON to "
+            "the output directory from config.yaml."
         ),
-        "artifacts": artifact_paths,
-    }
+    ),
+) -> dict:
+    """Run the full pipeline against an uploaded CSV.
+
+    Same downstream code as /pipeline/run; only difference is the slice
+    arrives via multipart upload instead of being pulled from
+    cfg['trigger']['source']. Useful when the engineer has a one-off
+    CSV from the factory floor and doesn't want to edit config.yaml.
+
+    The uploaded CSV must satisfy the schema declared in
+    config.yaml's `input` block (timestamp_column, numerical_features,
+    categorical_features, targets).
+    """
+    df = await _read_upload_to_df(file)
+    _, cfg = _resolve_config(config_path)
+    return _run_pipeline_on_df(df, cfg, persist=persist)
 
 
 @app.post("/pipeline/save_csv", tags=["pipeline"])
@@ -300,6 +396,12 @@ def _anomaly_bundle_path(model_type: str, model_id: str) -> Path:
 
 
 def _score_non_cyclical(req: "AnomalyScoreRequest") -> dict:
+    if not req.data:
+        raise HTTPException(
+            status_code=400,
+            detail="'data' must contain at least one row of sensor data",
+        )
+
     model_id = req.model_id or "inkjet_01"
     bundle_path = _anomaly_bundle_path("non_cyclical", model_id)
     if not bundle_path.is_file():
@@ -307,7 +409,8 @@ def _score_non_cyclical(req: "AnomalyScoreRequest") -> dict:
             status_code=404,
             detail=(
                 f"non_cyclical bundle not found at {bundle_path}. "
-                f"Train one first via `python pcil/utils/anomaly/non_cyclical/run.py`."
+                "Train one first via POST /anomaly/train (model_type=non_cyclical, "
+                "training_mode=clean_vs_anomaly) or the run.py CLI."
             ),
         )
 
@@ -341,6 +444,12 @@ def _score_non_cyclical(req: "AnomalyScoreRequest") -> dict:
 
 
 def _score_cyclical(req: "AnomalyScoreRequest") -> dict:
+    if not req.data:
+        raise HTTPException(
+            status_code=400,
+            detail="'data' must contain at least one row of sensor data",
+        )
+
     model_id = req.model_id or "inkjet_01"
     bundle_path = _anomaly_bundle_path("cyclical", model_id)
     if not bundle_path.is_file():
@@ -348,8 +457,8 @@ def _score_cyclical(req: "AnomalyScoreRequest") -> dict:
             status_code=404,
             detail=(
                 f"cyclical bundle not found at {bundle_path}. "
-                f"Train one via `python -m pcil.utils.anomaly.cyclical.prepare_data` "
-                f"then `python -m pcil.utils.anomaly.cyclical.train`."
+                "Train one first via POST /anomaly/train (model_type=cyclical, "
+                "training_mode=normal_only) or the cyclical train.py CLI."
             ),
         )
 
@@ -388,6 +497,157 @@ def _score_cyclical(req: "AnomalyScoreRequest") -> dict:
             else None
         ),
         "bundle_path": str(bundle_path),
+    }
+
+
+@app.post("/anomaly/train", tags=["anomaly"])
+async def anomaly_train(
+    model_type: Literal["cyclical", "non_cyclical"] = Form(
+        ..., description="Which subpackage to train."),
+    training_mode: Literal["normal_only", "clean_vs_anomaly"] = Form(
+        ..., description=(
+            "cyclical accepts 'normal_only'; non_cyclical accepts "
+            "'clean_vs_anomaly'.")),
+    model_id: str = Form(
+        "inkjet_01",
+        description="Identifier used in the saved bundle filename."),
+    file: UploadFile | None = File(
+        None,
+        description="cyclical normal_only: training CSV with the signal column."),
+    clean_file: UploadFile | None = File(
+        None,
+        description="non_cyclical clean_vs_anomaly: clean recording CSV."),
+    anomaly_file: UploadFile | None = File(
+        None,
+        description="non_cyclical clean_vs_anomaly: anomaly recording CSV."),
+    model_name: str = Form(
+        "isolation_forest",
+        description="Cyclical only. One of: z_score | isolation_forest | "
+                    "one_class_svm | autoencoder. Most are stubs; "
+                    "isolation_forest is the working default."),
+    machine_id_column: str = Form(
+        "machine_id",
+        description="Cyclical only — column containing the machine identifier."),
+    signal_column: str = Form(
+        "signal_value",
+        description="Cyclical only — column containing the cyclic signal."),
+    timestamp_column: str = Form(
+        "timestamp",
+        description="Cyclical only — column containing the timestamps."),
+    window_size_rows: int = Form(
+        12800,
+        description="Non-cyclical only — rows per fixed window. "
+                    "Default 12800 = 0.5 s at 25.6 kHz."),
+    train_ratio: float = Form(
+        0.8,
+        description="Non-cyclical only — fraction held for training."),
+) -> dict:
+    """Train an anomaly model from uploaded CSVs and persist the bundle.
+
+    Two supported combinations:
+
+    Combination A — Cyclical
+        model_type=cyclical
+        training_mode=normal_only
+        file=<CSV with machine_id_column, signal_column, timestamp_column>
+
+        Uses Jaymon's IsolationForest pipeline. Cycle detection runs on
+        signal_column; per-cycle features feed an unsupervised model.
+
+    Combination B — Non-cyclical
+        model_type=non_cyclical
+        training_mode=clean_vs_anomaly
+        clean_file=<CSV with channel columns: Acceleration 0/1/2, AE>
+        anomaly_file=<CSV with same channel columns>
+
+        Uses Zi Hin's supervised RandomForest pipeline. Fixed windows
+        on each recording; clean=0, anomaly=1; per-machine z-score
+        normaliser fit on clean training only.
+
+    The bundle is saved to:
+        <PROJECT_ROOT>/data/<model_type>_<model_id>.pkl
+
+    /anomaly/score then loads from that same path.
+    """
+    bundle_path = _anomaly_bundle_path(model_type, model_id)
+
+    if model_type == "cyclical" and training_mode == "normal_only":
+        if file is None:
+            raise HTTPException(
+                status_code=400,
+                detail=("cyclical normal_only requires the 'file' form field "
+                        "(the training CSV)."),
+            )
+        df = await _read_upload_to_df(file)
+        required = {machine_id_column, signal_column, timestamp_column}
+        missing = required - set(df.columns)
+        if missing:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"uploaded CSV is missing required columns: {sorted(missing)}. "
+                    f"Expected columns: {sorted(required)}. "
+                    "Adjust the form fields machine_id_column / signal_column / "
+                    "timestamp_column if your headers differ."
+                ),
+            )
+        from pcil.utils.anomaly.cyclical.train import train as cyclical_train_fn
+        bundle = cyclical_train_fn(
+            df,
+            model_name=model_name,
+            machine_id_column=machine_id_column,
+            signal_column=signal_column,
+            timestamp_column=timestamp_column,
+        )
+        input_rows = int(len(df))
+
+    elif model_type == "non_cyclical" and training_mode == "clean_vs_anomaly":
+        if clean_file is None or anomaly_file is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "non_cyclical clean_vs_anomaly requires both "
+                    "'clean_file' and 'anomaly_file' form fields."
+                ),
+            )
+        clean_df = await _read_upload_to_df(clean_file)
+        anomaly_df = await _read_upload_to_df(anomaly_file)
+        from pcil.utils.anomaly.non_cyclical.train import (
+            train_from_clean_and_anomaly,
+        )
+        try:
+            bundle = train_from_clean_and_anomaly(
+                clean_df, anomaly_df,
+                machine_id=model_id,
+                window_size_rows=window_size_rows,
+                train_ratio=train_ratio,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        input_rows = int(len(clean_df) + len(anomaly_df))
+
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"unsupported combination: model_type={model_type!r}, "
+                f"training_mode={training_mode!r}. "
+                "Supported: 'cyclical' + 'normal_only', or "
+                "'non_cyclical' + 'clean_vs_anomaly'."
+            ),
+        )
+
+    bundle_path.parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump(bundle, bundle_path)
+
+    return {
+        "status": "ok",
+        "model_type": model_type,
+        "model_id": model_id,
+        "training_mode": training_mode,
+        "input_rows": input_rows,
+        "bundle_path": str(bundle_path),
+        "message": "Model trained and ready for /anomaly/score",
     }
 
 
