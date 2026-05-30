@@ -3,11 +3,16 @@
 # Build (from PCIL/ or PCIL_dev/):
 #     docker build -t pcil-orchestrator .
 #
-# Run (mount your data/ folder so the orchestrator can find trained
-# anomaly bundles + the mock shop-floor CSV):
+# Run (mount your data/ folder + pass the Gemini key via --env-file):
 #     docker run --rm -p 8000:8000 \
+#         --env-file .env \
 #         -v "$(pwd)/../data:/app/data" \
 #         pcil-orchestrator
+#
+# `.env` must define GEMINI_API_KEY (see .env.example for the full list
+# of accepted vars). Without it, /pipeline/run still returns the
+# impacts JSON but operator_recommendation degrades to a fallback
+# string instead of an LLM-generated paragraph.
 #
 # Smoke test:
 #     curl http://localhost:8000/
@@ -43,6 +48,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
 #   /app/data/mock_shop_floor.csv         — trigger.source in config.yaml
 #   /app/data/non_cyclical_<id>.pkl       — Zi Hin's bundle
 #   /app/data/cyclical_<id>.pkl           — Jaymon's bundle
+#   /app/data/RAG/*.docx                  — recovery docs for RAG retrieval
 VOLUME ["/app/data"]
 
 EXPOSE 8000

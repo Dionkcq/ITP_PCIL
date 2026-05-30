@@ -48,10 +48,14 @@ shop-floor database themselves.
 # 1. Install dependencies
 pip install -r requirements.txt
 
-# 2. Start the orchestrator
+# 2. Set up environment variables (see "Setup — environment" below)
+Copy-Item .env.example .env
+# edit .env to fill in your real GEMINI_API_KEY
+
+# 3. Start the orchestrator
 python -m uvicorn pcil.orchestrator:app --host 0.0.0.0 --port 8000
 
-# 3. Browse the auto-generated API documentation
+# 4. Browse the auto-generated API documentation
 #    http://localhost:8000/docs       Swagger UI
 #    http://localhost:8000/           service metadata
 ```
@@ -63,6 +67,36 @@ python -m pytest tests/ -v
 # or for the existing integration smoke test:
 python scripts/smoke_test_orchestrator.py
 ```
+
+---
+
+## Setup — environment
+
+Pipeline #3 (RAG) uses the Google Gemini API to compose the operator
+recommendation. The key is read from the `GEMINI_API_KEY` environment
+variable at request time (not at startup), so the orchestrator boots
+even if the key is missing — calls to `/pipeline/run` will still
+return real impacts JSON, with a fallback string in
+`operator_recommendation`.
+
+```powershell
+Copy-Item .env.example .env
+# then edit .env and replace YOUR_GEMINI_API_KEY with a real key from
+# https://aistudio.google.com/apikey
+```
+
+`.env` is gitignored. The committed template `.env.example` lists the
+four variables the project reads:
+
+| Variable | Read by | Required? |
+|---|---|---|
+| `GEMINI_API_KEY` | `pcil.rag.composer` | Yes for live recommendations; fallback string returned otherwise |
+| `PCIL_PROJECT_ROOT` | `pcil.orchestrator` | Only when running in Docker (the image sets it to `/app`) |
+| `ORCHESTRATOR_URL` | `rag_frontend/app.py` | Only when using the optional Flask demo UI |
+| `PCIL_CONFIG_PATH` | `rag_frontend/app.py` | Only when using the optional Flask demo UI |
+
+The orchestrator never logs the key. For Docker, pass `.env` via
+`docker run --env-file .env ...` — see the Docker section below.
 
 ---
 
@@ -185,7 +219,10 @@ PCIL_dev/
 │   ├── adapter.py                   # Golden DF -> (X, y) numpy arrays
 │   ├── train_context_model.py       # Pipeline #2 — LinearRegression + impacts JSON
 │   ├── trigger.py                   # slice_by_time / slice_last_n_rows helpers
-│   ├── rag/                         # Pipeline #3 (Robin, WIP)
+│   ├── rag/                         # Pipeline #3 (Robin)
+│   │   ├── loader.py                # DOCX -> RecoveryRecord list
+│   │   ├── lookup.py                # keyword bag-of-words retrieval
+│   │   └── composer.py              # Gemini API call -> operator paragraph
 │   └── utils/anomaly/
 │       ├── base.py                  # AnomalyModel ABC + PerMachineNormaliser
 │       ├── cyclical/                # Jaymon's IsolationForest pipeline
@@ -258,7 +295,8 @@ Highlights:
 
 - `fastapi`, `uvicorn`, `pydantic`, `python-multipart` — orchestrator
 - `scikit-learn`, `pandas`, `numpy`, `scipy`, `joblib` — Pipelines + anomaly
-- `python-docx` — RAG
+- `python-docx`, `google-generativeai` — RAG retrieval + Gemini composer
+- `flask`, `requests` — optional `rag_frontend/` demo UI (not used by the API itself)
 - `pytest`, `httpx` — test suite (TestClient uses httpx under the hood)
 
 ---
@@ -286,25 +324,35 @@ python tests/fixtures/_generate.py
 
 ```powershell
 docker build -t pcil-orchestrator .
-docker run --rm -p 8000:8000 -v "$(pwd)/../data:/app/data" pcil-orchestrator
+docker run --rm -p 8000:8000 `
+    --env-file .env `
+    -v "$(pwd)/../data:/app/data" `
+    pcil-orchestrator
 # then visit http://localhost:8000/docs
 ```
 
-The container expects the host's `data/` folder mounted at `/app/data`.
-That's where trained anomaly bundles live (`<model_type>_<model_id>.pkl`)
-and where Pipeline #1 reads its mock shop-floor CSV from.
+The container expects two things mounted in at runtime:
+
+- **`/app/data` from the host's `data/` folder** — anomaly bundles
+  (`<model_type>_<model_id>.pkl`), the mock shop-floor CSV, and the RAG
+  document directory `data/RAG/*.docx`.
+- **`.env` passed via `--env-file`** — at minimum `GEMINI_API_KEY` so
+  the LLM composer can call Gemini. Without the env file the
+  orchestrator still boots and `/pipeline/run` still returns impacts
+  JSON, but `operator_recommendation` will be a fallback string.
 
 ---
 
-## Status (Week 3 follow-up, 28 May 2026)
+## Status (Week 3 follow-up, 30 May 2026)
 
 | Component | Status |
 |---|---|
 | Pipeline #1 (preprocess) | working — sklearn `ColumnTransformer` (MinMaxScaler + OneHotEncoder) |
 | Pipeline #2 (context model) | working — multi-target `LinearRegression` + new Week-3 impacts JSON schema |
-| Pipeline #3 (RAG) | skeleton — Robin filling in |
-| Orchestrator | working — 5 endpoints, Docker image, 21 pytest tests pass |
+| Pipeline #3 (RAG) | working — DOCX loader, keyword lookup, Gemini composer wired into `/pipeline/run` |
+| Orchestrator | working — 5 endpoints, Docker image, 22 pytest tests pass |
 | Anomaly: cyclical | working — Jaymon's IsolationForest (peak slicing + waveform features) |
 | Anomaly: non_cyclical | working — Zi Hin's RandomForest (~0.68 recall on labelled acoustic dataset) |
-| LLM composer | not started |
+| LLM composer | working — Gemini (`gemini-2.0-flash`), graceful fallback when key is unset |
+| `rag_frontend/` (optional Flask demo UI) | working — proxy-only client, not in the Docker image |
 | Operator dashboard | not started (out of scope for the 12 June test) |
