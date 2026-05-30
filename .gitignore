@@ -16,6 +16,9 @@ dist/
 venv/
 env/
 
+# Environment files
+.env
+
 # IDE / editor
 .vscode/
 .idea/
@@ -30,6 +33,7 @@ desktop.ini
 
 # Data files
 data/
+pcil/rag/data/
 
 # Per-run save_csv API outputs (generated on demand by /pipeline/save_csv;
 # not deliverables themselves — the deliverable is the API).

@@ -1,0 +1,4 @@
+GEMINI_API_KEY=YOUR_GEMINI_API_KEY
+ORCHESTRATOR_URL=http://localhost:8000
+PCIL_CONFIG_PATH=machines/inkjet_printer/config.yaml
+PCIL_PROJECT_ROOT=/path/to/project/root

@@ -1,7 +1,10 @@
 # PCIL — pinned Python dependencies
 # ----------------------------------
 # Install with: pip install -r requirements.txt
-#
+#recommend to create venv and activate before installing dependencies:
+# python -m venv .venv
+# .\.venv\Scripts\Activate.ps1
+
 # Versions are minimum-required (>=) to keep the file working as
 # packages move forward. Pin to exact versions before docker build
 # when we lock for the NUC.
@@ -21,6 +24,11 @@ python-multipart>=0.0.9   # required by FastAPI for UploadFile + Form (file uplo
 
 # Pipeline #3 (RAG, Robin's work)
 python-docx>=1.1
+google-generativeai>=0.7
+
+# Frontend (Flask UI)
+flask>=3.0
+requests>=2.31
 
 # Tests
 pytest>=7.4

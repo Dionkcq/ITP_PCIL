@@ -50,6 +50,11 @@ from pcil.adapter import adapt, column_names_from_config
 from pcil.preprocess import load_config, preprocess
 from pcil.train_context_model import save_artifacts, train_context_model_from_df
 from pcil.trigger import slice_by_time, slice_last_n_rows
+# RAG pipeline - imported at module level; guarded so missing
+# google-generativeai does not break non-RAG endpoints or the test suite.
+from pcil.rag.composer import compose_recommendation
+from pcil.rag.loader import load_all_recovery_docs
+from pcil.rag.lookup import lookup_keywords
 from pcil.utils.anomaly.cyclical.score import score as cyclical_score
 from pcil.utils.anomaly.non_cyclical.score import score as non_cyclical_score
 
@@ -62,6 +67,7 @@ from pcil.utils.anomaly.non_cyclical.score import score as non_cyclical_score
 PROJECT_ROOT = Path(
     os.environ.get("PCIL_PROJECT_ROOT") or Path(__file__).resolve().parents[2]
 )
+RAG_DIR = PROJECT_ROOT / "data" / "RAG"
 
 
 app = FastAPI(
@@ -262,15 +268,35 @@ def _run_pipeline_on_df(
         )
         artifact_paths = {"impacts_json": str(json_path), "model_pkl": str(pkl_path)}
 
+    # --- RAG retrieval + LLM composition ---------------------------
+    if RAG_DIR.is_dir():
+        try:
+            rag_query = _build_rag_query(impacts)
+            all_records = load_all_recovery_docs(RAG_DIR)
+            recovery_records = lookup_keywords(rag_query, all_records, top_k=3)
+            operator_recommendation = compose_recommendation(impacts, recovery_records)
+        except Exception as exc:  # noqa: BLE001
+            recovery_records = []
+            operator_recommendation = (
+                f"RAG retrieval failed ({type(exc).__name__}): {exc}. "
+                "Review the impacts data manually."
+            )
+    else:
+        recovery_records = []
+        operator_recommendation = (
+            "RAG document directory not found. "
+            f"Expected: {RAG_DIR}. "
+            "Mount the data/RAG/ folder and restart the orchestrator."
+        )
+    # ---------------------------------------------------------------
+
     return {
         "status": "ok",
         "input_rows": int(len(slice_df)),
         "golden_rows": int(len(golden_df)),
         "impacts": impacts,
-        "recovery_records": [],  # Pipeline #3 (RAG) — Robin
-        "operator_recommendation": (
-            "<LLM composer not wired yet — see deliverables/Week3/todo.md>"
-        ),
+        "recovery_records": recovery_records,
+        "operator_recommendation": operator_recommendation,
         "artifacts": artifact_paths,
     }
 
@@ -284,6 +310,25 @@ def _context_window_filename(slice_df: pd.DataFrame, timestamp_col: str) -> str:
     times = pd.to_datetime(slice_df[timestamp_col])
     fmt = "%Y%m%dT%H%M%S"
     return f"context_window_{times.min().strftime(fmt)}_{times.max().strftime(fmt)}.csv"
+
+
+def _build_rag_query(impacts: dict) -> str:
+    """Build a keyword query string from the impacts dict for RAG retrieval.
+
+    Extracts vocabulary from feature descriptions so that tokens match
+    human-readable DOCX error text. Falls back to splitting the column name
+    on underscores when no description is available.
+    """
+    tokens: set[str] = set()
+    for block in impacts.get("context", []):
+        tokens.add(block["target"])
+        for fi in block.get("ranked_feature_impacts", [])[:2]:
+            description = fi.get("description", "")
+            if description:
+                tokens.update(description.lower().split())
+            else:
+                tokens.update(fi["feature"].lower().split("_"))
+    return " ".join(tokens)
 
 
 # ─────────────────────────────────────────────────────────────
