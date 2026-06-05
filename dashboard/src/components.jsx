@@ -1,5 +1,20 @@
 import { useState } from 'react'
 
+// ── Header meta ────────────────────────────────────────────────────
+export function MetaBar({ data }) {
+  const system = data.impacts?.system ?? 'unknown'
+  const cw = data.impacts?.context_window ?? {}
+  const from = cw.time_from ?? cw.start ?? '—'
+  const to = cw.time_to ?? cw.end ?? '—'
+  return (
+    <div className="meta">
+      <span><strong>System</strong> {system}</span>
+      <span><strong>Window</strong> {from} &rarr; {to}</span>
+      <span><strong>Rows</strong> {data.input_rows}</span>
+    </div>
+  )
+}
+
 // ── KPI cards ──────────────────────────────────────────────────────
 const TARGET_ORDER = ['availability', 'performance', 'quality', 'oee']
 const TARGET_LABELS = {
@@ -31,12 +46,7 @@ export function KpiCards({ summary }) {
 }
 
 // ── Operator recommendation ────────────────────────────────────────
-const FALLBACK_HINTS = [
-  'not found',
-  'failed',
-  'not set',
-  'No matching recovery',
-]
+const FALLBACK_HINTS = ['not found', 'failed', 'not set', 'No matching recovery']
 
 export function Recommendation({ text }) {
   const isFallback = FALLBACK_HINTS.some((h) => (text || '').includes(h))
@@ -57,7 +67,8 @@ export function Recommendation({ text }) {
 // ── Ranked feature impacts ─────────────────────────────────────────
 export function ImpactBars({ impacts }) {
   const blocks = impacts?.context ?? []
-  const initial = blocks.find((b) => b.target === 'oee')?.target ?? blocks[0]?.target ?? ''
+  const initial =
+    blocks.find((b) => b.target === 'oee')?.target ?? blocks[0]?.target ?? ''
   const [target, setTarget] = useState(initial)
 
   const block = blocks.find((b) => b.target === target)
@@ -126,5 +137,42 @@ export function EvidenceList({ records }) {
         </details>
       ))}
     </section>
+  )
+}
+
+// ── Full diagnosis (reused for the current run and history detail) ─
+export function DiagnosisResult({ data }) {
+  return (
+    <>
+      <MetaBar data={data} />
+      <KpiCards summary={data.target_summary} />
+      <Recommendation text={data.operator_recommendation} />
+      <ImpactBars impacts={data.impacts} />
+      <EvidenceList records={data.recovery_records} />
+    </>
+  )
+}
+
+// ── Anomaly score strip ────────────────────────────────────────────
+export function ScoreStrip({ scores, threshold }) {
+  if (!scores || scores.length === 0) {
+    return <div className="muted">No cycles / windows detected in the input.</div>
+  }
+  const max = Math.max(...scores, 1e-9)
+  return (
+    <div className="score-strip">
+      {scores.map((s, i) => {
+        const h = Math.max(2, (s / max) * 100)
+        const flagged = threshold != null && s > threshold
+        return (
+          <div
+            key={i}
+            className={`score-bar ${flagged ? 'flagged' : ''}`}
+            style={{ height: `${h}%` }}
+            title={`#${i}: ${s.toFixed(3)}${flagged ? ' (flagged)' : ''}`}
+          />
+        )
+      })}
+    </div>
   )
 }

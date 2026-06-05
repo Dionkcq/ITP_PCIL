@@ -1,9 +1,19 @@
 # PCIL Operator Dashboard (React + Vite)
 
 A thin React client for the PCIL Job Orchestrator. It holds **no** pipeline
-logic — it calls `POST /pipeline/run` and renders the response: KPI cards for
-the window's targets, the LLM operator recommendation, a ranked bar chart of
-what is driving each target, and the retrieved recovery evidence.
+logic — it calls the API and renders the JSON. Three tabs:
+
+- **Diagnosis** — run the pipeline on the configured source *or* upload a
+  shop-floor CSV (`/pipeline/run`, `/pipeline/run_csv`). Shows KPI cards, the
+  LLM operator recommendation, a ranked bar chart of what is driving each
+  target, and the recovery evidence. Download the result as JSON, print it to
+  PDF, export the context-window CSV (`/pipeline/save_csv`), and re-view past
+  runs from the in-session history.
+- **Anomaly check** — upload a time-series CSV, pick cyclical / non-cyclical +
+  model id, and see the per-cycle/per-window anomaly scores with an adjustable
+  threshold and flagged count (`/anomaly/score`).
+- **Train model** — train an anomaly bundle from uploaded CSV(s)
+  (`/anomaly/train`).
 
 ## Prerequisites
 
