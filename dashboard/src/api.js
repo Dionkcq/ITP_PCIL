@@ -1,10 +1,16 @@
 // Thin client for the PCIL Job Orchestrator. The dashboard holds NO pipeline
 // logic — it just calls the API and renders the JSON.
 
-const BASE =
-  import.meta.env.VITE_ORCHESTRATOR_URL || 'http://localhost:8000'
+// Resolution order:
+//   1. VITE_ORCHESTRATOR_URL (vite dev server, or any cross-origin deploy).
+//   2. Empty string → same-origin requests. This is the production path:
+//      the FastAPI app serves the dashboard at /dashboard from its own
+//      origin, so /pipeline/run etc. resolve to that same host:port.
+const BASE = import.meta.env.VITE_ORCHESTRATOR_URL || ''
 
-export const ORCHESTRATOR_URL = BASE
+// Human-readable label for the API pill in the header.
+export const ORCHESTRATOR_URL =
+  BASE || (typeof window !== 'undefined' ? window.location.origin : 'same-origin')
 
 async function handle(res) {
   if (!res.ok) {

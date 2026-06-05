@@ -56,9 +56,18 @@ Copy-Item .env.example .env
 python -m uvicorn pcil.orchestrator:app --host 0.0.0.0 --port 8000
 
 # 4. Browse the auto-generated API documentation
-#    http://localhost:8000/docs       Swagger UI
-#    http://localhost:8000/           service metadata
+#    http://localhost:8000/docs           Swagger UI
+#    http://localhost:8000/               service metadata
+#    http://localhost:8000/dashboard/     operator dashboard (if built)
 ```
+
+The operator dashboard is served by the same FastAPI process at
+`/dashboard/` whenever a built `dashboard/dist/` directory is present.
+For local Python-only development the directory is absent, so
+`/dashboard/` returns 404 — that is expected and does not affect the
+API endpoints. To produce the bundle locally, run `npm run build` in
+`dashboard/`. The Docker image builds it automatically (see below), so
+NUC operators get the dashboard with no Node toolchain installed.
 
 For a one-shot end-to-end check that every endpoint behaves:
 
@@ -328,8 +337,19 @@ docker run --rm -p 8000:8000 `
     --env-file .env `
     -v "$(pwd)/../data:/app/data" `
     pcil-orchestrator
-# then visit http://localhost:8000/docs
+# then visit:
+#   http://localhost:8000/dashboard/   operator dashboard (single page UI)
+#   http://localhost:8000/docs         Swagger UI
 ```
+
+The Dockerfile is a two-stage build: a `node:20-slim` stage runs
+`npm ci && npm run build` against `dashboard/`, then the runtime
+`python:3.13-slim` stage copies the resulting `dist/` into
+`/app/dashboard/dist`. `DASHBOARD_DIST_DIR` defaults to that path so
+the orchestrator mounts the static files automatically — Winardi (or
+any operator on the NUC's LAN) just opens
+`http://<nuc-ip>:8000/dashboard/` in a browser. No Node, npm, or Vite
+process is required at runtime.
 
 The container expects two things mounted in at runtime:
 
@@ -355,4 +375,4 @@ The container expects two things mounted in at runtime:
 | Anomaly: non_cyclical | working — Zi Hin's RandomForest (~0.68 recall on labelled acoustic dataset) |
 | LLM composer | working — Gemini (`gemini-2.5-flash` via `google-genai`), graceful fallback when key is unset |
 | `rag_frontend/` (optional Flask demo UI) | working — proxy-only client, not in the Docker image |
-| Operator dashboard | not started (out of scope for the 12 June test) |
+| Operator dashboard | working — React + Vite client, served by the orchestrator at `/dashboard/` and bundled into the Docker image via multi-stage build |

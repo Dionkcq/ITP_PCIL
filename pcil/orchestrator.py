@@ -45,6 +45,7 @@ import pandas as pd
 import yaml
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from pcil.adapter import adapt, column_names_from_config
@@ -70,6 +71,18 @@ PROJECT_ROOT = Path(
 )
 RAG_DIR = PROJECT_ROOT / "data" / "RAG"
 
+# Built dashboard assets. In Docker, PCIL_PROJECT_ROOT=/app and the
+# multi-stage build copies the bundle to /app/dashboard/dist. In local
+# development, PROJECT_ROOT intentionally points one level above PCIL/ so
+# data/ resolves correctly; REPO_ROOT points at the folder containing this
+# code checkout and catches PCIL/dashboard/dist after `npm run build`.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_DASHBOARD_DIST_CANDIDATES = (
+    PROJECT_ROOT / "dashboard" / "dist",
+    REPO_ROOT / "dashboard" / "dist",
+)
+DASHBOARD_URL_PATH = "/dashboard"
+
 app = FastAPI(
     title="PCIL Job Orchestrator",
     version="0.1.0",
@@ -88,6 +101,39 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def attach_dashboard(app: FastAPI, dist_dir: Path | str | None = None) -> Path | None:
+    """Serve the built dashboard at /dashboard if static assets are present.
+
+    Resolution order:
+      1. explicit `dist_dir` argument
+      2. DASHBOARD_DIST_DIR environment variable
+      3. <PROJECT_ROOT>/dashboard/dist (Docker default)
+      4. <repo checkout>/dashboard/dist (local dev fallback)
+
+    Returns the resolved path when the mount succeeded, otherwise None
+    (so the orchestrator still boots when running the API without a
+    built dashboard, e.g. in CI or before `npm run build`).
+    """
+    if dist_dir or os.environ.get("DASHBOARD_DIST_DIR"):
+        candidates = (Path(dist_dir or os.environ["DASHBOARD_DIST_DIR"]),)
+    else:
+        candidates = DEFAULT_DASHBOARD_DIST_CANDIDATES
+
+    for candidate in candidates:
+        dist_path = Path(candidate)
+        if dist_path.is_dir() and (dist_path / "index.html").is_file():
+            app.mount(
+                DASHBOARD_URL_PATH,
+                StaticFiles(directory=dist_path, html=True),
+                name="dashboard",
+            )
+            return dist_path
+    return None
+
+
+DASHBOARD_DIST = attach_dashboard(app)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -370,7 +416,9 @@ def root() -> dict:
                 "POST /anomaly/score",
             ],
             "docs": "GET /docs",
+            "dashboard": f"GET {DASHBOARD_URL_PATH}/",
         },
+        "dashboard_available": DASHBOARD_DIST is not None,
     }
 
 

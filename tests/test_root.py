@@ -24,3 +24,8 @@ def test_root_lists_all_factory_endpoints(client):
     assert "POST /anomaly/train" in anomaly
     assert "POST /anomaly/score" in anomaly
     assert body["endpoints"]["docs"] == "GET /docs"
+    assert body["endpoints"]["dashboard"] == "GET /dashboard/"
+    # `dashboard_available` reflects whether the built static files were
+    # found at startup. The test suite does not assume `npm run build`
+    # has run, so only assert the key exists with a boolean value.
+    assert isinstance(body["dashboard_available"], bool)

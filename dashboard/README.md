@@ -51,8 +51,20 @@ npm run build      # outputs static files to dist/
 npm run preview    # serve the built files locally to check
 ```
 
-`dist/` is a folder of static files — serve it with any static host, or
-behind the same reverse proxy as the orchestrator.
+`dist/` is a folder of static files. The orchestrator's FastAPI app
+serves them directly at `/dashboard/` whenever `dashboard/dist/`
+exists at `PCIL_PROJECT_ROOT`, or whenever the `DASHBOARD_DIST_DIR`
+environment variable points at a valid build. The production
+Dockerfile is a two-stage build that runs `npm run build` in a Node
+stage and copies the resulting `dist/` into the Python runtime image,
+so the NUC operator opens `http://<nuc-ip>:8000/dashboard/` directly
+— no Node, npm, or separate static host is required at runtime.
+
+When the dashboard is served from the same origin as the API (i.e.
+`/dashboard/` on port 8000), the bundled client uses same-origin
+requests by default. Override `VITE_ORCHESTRATOR_URL` only if you are
+running the dashboard from a different host than the orchestrator,
+e.g. `npm run dev` against a remote NUC.
 
 ## How it maps to the API
 
@@ -64,5 +76,7 @@ behind the same reverse proxy as the orchestrator.
 | Evidence              | `recovery_records`                              |
 | Header meta           | `impacts.system`, `impacts.context_window`      |
 
-This is a separate, decoupled client (like `rag_frontend/`) — it is not part
-of the orchestrator Docker image.
+This is a decoupled React/Vite client — the build (`dist/`) is bundled
+into the orchestrator Docker image and served at `/dashboard/` by the
+same FastAPI process. Source still lives outside `pcil/` so the dev
+workflow stays Node-only.

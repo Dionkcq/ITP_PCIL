@@ -15,9 +15,24 @@
 # string instead of an LLM-generated paragraph.
 #
 # Smoke test:
-#     curl http://localhost:8000/
-#     curl http://localhost:8000/docs        # Swagger UI
+#     curl http://localhost:8000/                # service metadata
+#     curl http://localhost:8000/docs            # Swagger UI
+#     open  http://localhost:8000/dashboard/     # operator dashboard
 
+# ── Stage 1: build the React dashboard ───────────────────────────────
+# Produces dashboard/dist/ for the runtime image to copy. Pinned to
+# node:20-slim so the image stays small (the dashboard has no native
+# deps). No VITE_ORCHESTRATOR_URL is set: the built bundle then falls
+# back to same-origin requests, which is exactly what we want when
+# FastAPI serves both the API and the dashboard from the same host.
+FROM node:20-slim AS dashboard-build
+WORKDIR /build/dashboard
+COPY dashboard/package.json dashboard/package-lock.json ./
+RUN npm ci
+COPY dashboard/ ./
+RUN npm run build
+
+# ── Stage 2: Python runtime ──────────────────────────────────────────
 FROM python:3.13-slim
 
 # Runtime libs for the scientific Python stack. sklearn relies on libgomp;
@@ -40,6 +55,13 @@ RUN pip install --no-cache-dir torch==2.12.0 --index-url https://download.pytorc
 # Application code.
 COPY pcil/ ./pcil/
 COPY machines/ ./machines/
+
+# Built dashboard from stage 1. FastAPI mounts this directory at
+# /dashboard via attach_dashboard(); the operator opens
+# http://<nuc-ip>:8000/dashboard/ in any browser — no Node required at
+# runtime.
+COPY --from=dashboard-build /build/dashboard/dist/ ./dashboard/dist/
+ENV DASHBOARD_DIST_DIR=/app/dashboard/dist
 
 # In dev, orchestrator.py walks up to ITP/ via Path.parents[2]. In the
 # container, /app IS the project root, so set it explicitly.
