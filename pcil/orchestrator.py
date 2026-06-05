@@ -44,6 +44,7 @@ import joblib
 import pandas as pd
 import yaml
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from pcil.adapter import adapt, column_names_from_config
@@ -76,6 +77,16 @@ app = FastAPI(
         "Coordinates the PCIL runtime pipeline. See /docs for the "
         "interactive Swagger UI."
     ),
+)
+
+# Allow the React dashboard (a separate origin/port) to call the API from a
+# browser. Permissive for the PoC; tighten allow_origins for production.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -289,11 +300,19 @@ def _run_pipeline_on_df(
         )
     # ---------------------------------------------------------------
 
+    # Window-level mean of each target, for the dashboard KPI cards.
+    target_summary = {
+        t: float(golden_df[t].mean())
+        for t in targets
+        if t in golden_df.columns
+    }
+
     return {
         "status": "ok",
         "input_rows": int(len(slice_df)),
         "golden_rows": int(len(golden_df)),
         "impacts": impacts,
+        "target_summary": target_summary,
         "recovery_records": recovery_records,
         "operator_recommendation": operator_recommendation,
         "artifacts": artifact_paths,
