@@ -2,8 +2,8 @@
 Cyclical anomaly pipeline — train CLI
 ======================================
 Wires the four steps together:
-  1. slice (cycle detection)            -> from cyclical/slice.py
-  2. extract features per cycle         -> from cyclical/features.py
+  1. slice (peak detection)             -> from cyclical/slice.py
+  2. extract waveform features          -> from cyclical/features.py
   3. per-machine normalisation          -> shared normalise.PerMachineNormaliser
   4. fit the chosen model               -> from cyclical/model.py
 
@@ -11,13 +11,12 @@ Saves one fitted pipeline instance as a .pkl bundle containing the
 model, normaliser, and feature column names. The reusable part is this
 pipeline code; the saved .pkl is machine/data-type specific.
 
-Run from PCIL_dev/:
+Run from repo root:
     python -m pcil.utils.anomaly.cyclical.train \\
-        --input ../data/cyclical_dataset.csv \\
-        --output ../data/cyclical_inkjet_01.pkl \\
-        --model isolation_forest
+        --input data/cyclical_dataset.csv \\
+        --output data/inkjet_cyclical.pkl
 
-Models: z_score | isolation_forest | one_class_svm | autoencoder
+Models: isolation_forest | autoencoder (default: autoencoder)
 """
 
 from __future__ import annotations
@@ -26,29 +25,23 @@ import argparse
 from pathlib import Path
 
 import joblib
+import numpy as np
 import pandas as pd
 
 from pcil.utils.anomaly.base import PerMachineNormaliser
 from pcil.utils.anomaly.cyclical.slice import detect_cycles
 from pcil.utils.anomaly.cyclical.features import extract_features, stack_features
-from pcil.utils.anomaly.cyclical.model import (
-    AutoencoderModel,
-    IsolationForestModel,
-    OneClassSVMModel,
-    ZScoreModel,
-)
+from pcil.utils.anomaly.cyclical.model import AutoencoderModel, IsolationForestModel
 
 _MODEL_REGISTRY = {
-    "z_score":          ZScoreModel,
     "isolation_forest": IsolationForestModel,
-    "one_class_svm":    OneClassSVMModel,
     "autoencoder":      AutoencoderModel,
 }
 
 
 def train(
     df: pd.DataFrame,
-    model_name: str,
+    model_name: str = "autoencoder",
     *,
     machine_id_column: str = "machine_id",
     signal_column: str = "signal_value",
@@ -56,15 +49,12 @@ def train(
     model_kwargs: dict | None = None,
 ) -> dict:
     """
-    Run the full pipeline on `df` and return a bundle dict that
-    score.py / joblib can roundtrip.
+    Run the full pipeline on `df` and return a bundle dict.
 
-    Production intent: run this once per machine/data type. The code can
-    carry multiple machine IDs for experiments, but the normaliser/model
-    inside the returned bundle are fitted state, not the shared pipeline
-    definition itself.
+    The bundle contains the fitted model, normaliser, and metadata
+    needed by score.py to score new data.
     """
-    # 1. Slice into cycles per machine, extract features per cycle
+    # 1. Slice into cycles, extract waveform features per cycle
     cycle_rows = []
     for machine_id, group in df.groupby(machine_id_column):
         group = group.sort_values(timestamp_column).reset_index(drop=True)
@@ -92,26 +82,36 @@ def train(
     X = feature_df_norm[feature_columns].to_numpy(dtype=float)
     model.fit(X)
 
+    # Compute threshold from training scores.
+    # Without ground truth labels at train time, use the 95th percentile
+    # of training scores as a conservative starting threshold — this flags
+    # only the top 5% of training cycles as suspicious.
+    # When labelled eval data is available, call find_best_threshold()
+    # on the scored eval set to refine it.
+    train_scores = model.score(X)
+    best_thresh = float(np.percentile(train_scores, 95))
+
     return {
-        "model":             model,
-        "model_name":        model_name,
-        "normaliser":        normaliser,
-        "feature_columns":   feature_columns,
+        "model":               model,
+        "model_name":          model_name,
+        "normaliser":          normaliser,
+        "feature_columns":     feature_columns,
         "trained_machine_ids": sorted(feature_df[machine_id_column].unique()),
-        "machine_id_column": machine_id_column,
-        "signal_column":     signal_column,
-        "timestamp_column":  timestamp_column,
+        "machine_id_column":   machine_id_column,
+        "signal_column":       signal_column,
+        "timestamp_column":    timestamp_column,
+        "threshold":           best_thresh,
     }
 
 
 def main():
     parser = argparse.ArgumentParser(description="Train cyclical anomaly model.")
-    parser.add_argument("--input", required=True, help="Path to cyclical_dataset.csv.")
-    parser.add_argument("--output", required=True, help="Where to save the bundled .pkl.")
-    parser.add_argument("--model", choices=list(_MODEL_REGISTRY), default="isolation_forest")
+    parser.add_argument("--input",  required=True, help="Path to cyclical_dataset.csv.")
+    parser.add_argument("--output", required=True, help="Where to save the .pkl bundle.")
+    parser.add_argument("--model",  choices=list(_MODEL_REGISTRY), default="autoencoder")
     parser.add_argument("--machine-id-column", default="machine_id")
-    parser.add_argument("--signal-column", default="signal_value")
-    parser.add_argument("--timestamp-column", default="timestamp")
+    parser.add_argument("--signal-column",     default="signal_value")
+    parser.add_argument("--timestamp-column",  default="timestamp")
     args = parser.parse_args()
 
     df = pd.read_csv(args.input)
