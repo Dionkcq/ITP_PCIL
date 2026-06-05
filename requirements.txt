@@ -22,6 +22,11 @@ uvicorn[standard]>=0.27
 pydantic>=2.5
 python-multipart>=0.0.9   # required by FastAPI for UploadFile + Form (file uploads)
 
+# Cyclical anomaly: 1D CNN autoencoder (Jaymon's selected model)
+# CPU-only wheel keeps the Docker image small; install with:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+torch>=2.2
+
 # Pipeline #3 (RAG, Robin's work)
 python-docx>=1.1
 google-genai>=1.0          # supported SDK; replaced end-of-life google-generativeai

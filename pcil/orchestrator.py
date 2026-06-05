@@ -565,10 +565,10 @@ async def anomaly_train(
         None,
         description="non_cyclical clean_vs_anomaly: anomaly recording CSV."),
     model_name: str = Form(
-        "isolation_forest",
-        description="Cyclical only. One of: z_score | isolation_forest | "
-                    "one_class_svm | autoencoder. Most are stubs; "
-                    "isolation_forest is the working default."),
+        "autoencoder",
+        description="Cyclical only. One of: isolation_forest | autoencoder. "
+                    "autoencoder (1D CNN) is the selected default; "
+                    "isolation_forest is the lightweight fallback."),
     machine_id_column: str = Form(
         "machine_id",
         description="Cyclical only — column containing the machine identifier."),
@@ -595,8 +595,9 @@ async def anomaly_train(
         training_mode=normal_only
         file=<CSV with machine_id_column, signal_column, timestamp_column>
 
-        Uses Jaymon's IsolationForest pipeline. Cycle detection runs on
-        signal_column; per-cycle features feed an unsupervised model.
+        Uses Jaymon's 1D CNN autoencoder by default (model_name=autoencoder),
+        with isolation_forest as a lightweight fallback. Cycle detection runs
+        on signal_column; per-cycle waveforms feed an unsupervised model.
 
     Combination B — Non-cyclical
         model_type=non_cyclical

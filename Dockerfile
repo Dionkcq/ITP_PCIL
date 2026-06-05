@@ -29,9 +29,13 @@ RUN apt-get update \
 WORKDIR /app
 
 # Install Python deps in their own layer so source-only edits don't
-# invalidate the heavy install cache.
+# invalidate the heavy install cache. Install the CPU-only torch wheel
+# first: the default PyPI torch wheel bundles CUDA and is ~GB, which the
+# NUC does not need. The subsequent requirements install then sees
+# torch>=2.2 already satisfied and skips it.
 COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
+    && pip install --no-cache-dir -r requirements.txt
 
 # Application code.
 COPY pcil/ ./pcil/
