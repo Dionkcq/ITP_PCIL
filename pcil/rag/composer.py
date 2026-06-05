@@ -17,7 +17,7 @@ def compose_recommendation(
     impacts: dict,
     records: list["RecoveryRecord"],
     *,
-    model: str = "gemini-2.0-flash",
+    model: str = "gemini-2.5-flash",
 ) -> str:
     """Generate a plain-English operator recommendation.
 
@@ -30,7 +30,7 @@ def compose_recommendation(
     records:
         Recovery records retrieved by lookup_keywords(). May be empty.
     model:
-        Gemini model name. Defaults to "gemini-2.0-flash".
+        Gemini model name. Defaults to "gemini-2.5-flash".
 
     Returns
     -------
@@ -54,11 +54,10 @@ def compose_recommendation(
     prompt = _build_prompt(impacts, records)
 
     try:
-        import google.generativeai as genai  # noqa: PLC0415
+        from google import genai  # noqa: PLC0415
 
-        genai.configure(api_key=api_key)
-        model_client = genai.GenerativeModel(model)
-        response = model_client.generate_content(prompt)
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(model=model, contents=prompt)
         return response.text.strip()
     except Exception as exc:  # noqa: BLE001
         return (

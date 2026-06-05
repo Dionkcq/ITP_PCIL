@@ -51,7 +51,7 @@ from pcil.preprocess import load_config, preprocess
 from pcil.train_context_model import save_artifacts, train_context_model_from_df
 from pcil.trigger import slice_by_time, slice_last_n_rows
 # RAG pipeline - imported at module level; guarded so missing
-# google-generativeai does not break non-RAG endpoints or the test suite.
+# google-genai does not break non-RAG endpoints or the test suite.
 from pcil.rag.composer import compose_recommendation
 from pcil.rag.loader import load_all_recovery_docs
 from pcil.rag.lookup import lookup_keywords
@@ -68,7 +68,6 @@ PROJECT_ROOT = Path(
     os.environ.get("PCIL_PROJECT_ROOT") or Path(__file__).resolve().parents[2]
 )
 RAG_DIR = PROJECT_ROOT / "data" / "RAG"
-
 
 app = FastAPI(
     title="PCIL Job Orchestrator",

@@ -295,7 +295,7 @@ Highlights:
 
 - `fastapi`, `uvicorn`, `pydantic`, `python-multipart` — orchestrator
 - `scikit-learn`, `pandas`, `numpy`, `scipy`, `joblib` — Pipelines + anomaly
-- `python-docx`, `google-generativeai` — RAG retrieval + Gemini composer
+- `python-docx`, `google-genai` — RAG retrieval + Gemini composer
 - `flask`, `requests` — optional `rag_frontend/` demo UI (not used by the API itself)
 - `pytest`, `httpx` — test suite (TestClient uses httpx under the hood)
 
@@ -350,9 +350,9 @@ The container expects two things mounted in at runtime:
 | Pipeline #1 (preprocess) | working — sklearn `ColumnTransformer` (MinMaxScaler + OneHotEncoder) |
 | Pipeline #2 (context model) | working — multi-target `LinearRegression` + new Week-3 impacts JSON schema |
 | Pipeline #3 (RAG) | working — DOCX loader, keyword lookup, Gemini composer wired into `/pipeline/run` |
-| Orchestrator | working — 5 endpoints, Docker image, 22 pytest tests pass |
+| Orchestrator | working — 5 endpoints, Docker image, 23 pytest tests pass |
 | Anomaly: cyclical | working — Jaymon's IsolationForest (peak slicing + waveform features) |
 | Anomaly: non_cyclical | working — Zi Hin's RandomForest (~0.68 recall on labelled acoustic dataset) |
-| LLM composer | working — Gemini (`gemini-2.0-flash`), graceful fallback when key is unset |
+| LLM composer | working — Gemini (`gemini-2.5-flash` via `google-genai`), graceful fallback when key is unset |
 | `rag_frontend/` (optional Flask demo UI) | working — proxy-only client, not in the Docker image |
 | Operator dashboard | not started (out of scope for the 12 June test) |

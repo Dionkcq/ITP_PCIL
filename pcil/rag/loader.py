@@ -14,8 +14,9 @@ Dependency: python-docx
 
 from __future__ import annotations
 
-from pathlib import Path
+import re
 import sys
+from pathlib import Path
 from typing import TypedDict
 
 # Per-file parse cache: path string -> list of records parsed from that file.
@@ -35,58 +36,66 @@ class RecoveryRecord(TypedDict):
 
 
 def load_docx(docx_path: Path) -> list[RecoveryRecord]:
-    """
-    Parse one DOCX into a list of RecoveryRecord dicts.
+    """Parse one DOCX into a list of RecoveryRecord dicts.
 
-    TODO (teammate):
-      1. Open the DOCX with `from docx import Document`.
-      2. Walk paragraphs/tables and detect the heading pattern
-         (Error Message / Root Cause / Recovery Steps). Headings vary —
-         inspect the doc structure first.
-      3. Group each (error, cause, recovery) trio into one record.
-      4. Return list[RecoveryRecord].
+    The Model Factory machine docs put each field on its own paragraph in
+    "Label: value" form, e.g.::
 
-    Heads up:
-      - Some docs use tables, some use paragraphs.
-      - Pick ONE doc to start with (e.g. Screen Printer.docx — Dion read
-        it earlier and confirmed it has 19 structured error blocks).
+        Error 1:
+        Error Message: Air pressure low.
+        Root Cause: Air supply pressure is below operational value; ...
+        Critical: Yes
+        Recovery Steps: Increase air supply by adjusting regulator.
+        Preventive Actions: ...
+
+    Each block begins with an "Error Message:" line; "Root Cause:" and
+    "Recovery Steps:" follow. Other fields (Critical, Resolvable,
+    Preventive Actions, ...) are ignored. A record is kept only when it has
+    both an error message and recovery steps.
     """
     cache_key = str(docx_path)
     if cache_key in _RECORD_CACHE:
-      return _RECORD_CACHE[cache_key]
+        return _RECORD_CACHE[cache_key]
 
     from docx import Document  # noqa: PLC0415 - keep docx as optional dep
 
     doc = Document(docx_path)
     records: list[RecoveryRecord] = []
 
-    current: dict[str, str] = {}
-    heading_map = {
-        "error message": "error",
-        "root cause": "cause",
-        "recovery steps": "recovery",
-    }
+    error_re = re.compile(r"^error\s*message\s*:\s*(.*)$", re.IGNORECASE)
+    cause_re = re.compile(r"^root\s*cause\s*:\s*(.*)$", re.IGNORECASE)
+    recovery_re = re.compile(r"^recovery\s*steps?\s*:\s*(.*)$", re.IGNORECASE)
 
+    def _flush(cur: dict[str, str]) -> None:
+        if cur.get("error") and cur.get("recovery"):
+            records.append(RecoveryRecord(
+                error=cur.get("error", ""),
+                cause=cur.get("cause", ""),
+                recovery=cur.get("recovery", ""),
+                source_doc=docx_path.name,
+            ))
+
+    current: dict[str, str] = {}
     for para in doc.paragraphs:
         text = para.text.strip()
         if not text:
             continue
-        key = heading_map.get(text.lower())
-        if key:
-            current[key] = ""
-        elif current:
-            # Accumulate body text under the most recently seen heading.
-            last_key = list(current)[-1]
-            current[last_key] = (current[last_key] + " " + text).strip()
 
-        if all(k in current for k in ("error", "cause", "recovery")):
-            records.append(RecoveryRecord(
-                error=current["error"],
-                cause=current["cause"],
-                recovery=current["recovery"],
-                source_doc=docx_path.name,
-            ))
-            current = {}
+        m = error_re.match(text)
+        if m:
+            _flush(current)                       # new block boundary
+            current = {"error": m.group(1).strip()}
+            continue
+        m = cause_re.match(text)
+        if m:
+            current["cause"] = m.group(1).strip()
+            continue
+        m = recovery_re.match(text)
+        if m:
+            current["recovery"] = m.group(1).strip()
+            continue
+
+    _flush(current)                               # final block
 
     if len(records) < 5:
         print(
