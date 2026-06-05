@@ -1,0 +1,40 @@
+# PCIL — dependency source (human-edited ranges)
+# ------------------------------------------------
+# This lists the >= minimums. The pinned lock the Docker/NUC build actually
+# installs is requirements.txt (pinned to the verified local env). Workflow:
+# edit here, reinstall, then refresh requirements.txt with `pip freeze`.
+#
+#   python -m venv .venv ; .\.venv\Scripts\Activate.ps1
+#   pip install -r requirements.txt      # the pinned lock
+
+# Pipeline #1 / #2
+pandas>=2.0
+numpy>=1.26
+scikit-learn>=1.4
+scipy>=1.11               # cyclical slice.py uses scipy.signal.find_peaks
+pyyaml>=6.0
+joblib>=1.3
+
+# Orchestrator (Week-3)
+fastapi>=0.110
+uvicorn[standard]>=0.27
+pydantic>=2.5
+python-multipart>=0.0.9   # required by FastAPI for UploadFile + Form (file uploads)
+
+# Cyclical anomaly: 1D CNN autoencoder (Jaymon's selected model)
+# CPU-only wheel keeps the Docker image small; install with:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+torch>=2.2
+
+# Pipeline #3 (RAG, Robin's work)
+python-docx>=1.1
+google-genai>=1.0          # supported SDK; replaced end-of-life google-generativeai
+
+# Frontend (Flask UI)
+flask>=3.0
+requests>=2.31
+
+# Tests + run scripts
+pytest>=7.4
+httpx>=0.27               # used by FastAPI TestClient
+python-dotenv>=1.0        # used by `uvicorn --env-file` and the run scripts

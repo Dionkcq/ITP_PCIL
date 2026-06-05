@@ -34,7 +34,7 @@ WORKDIR /app
 # NUC does not need. The subsequent requirements install then sees
 # torch>=2.2 already satisfied and skips it.
 COPY requirements.txt ./
-RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
+RUN pip install --no-cache-dir torch==2.12.0 --index-url https://download.pytorch.org/whl/cpu \
     && pip install --no-cache-dir -r requirements.txt
 
 # Application code.
