@@ -1,6 +1,10 @@
 import numpy as np
 import pandas as pd
 from scipy.stats import kurtosis as scipy_kurtosis
+
+# np.trapz was removed in NumPy 2.0 (renamed np.trapezoid). Resolve once
+# here so the registry lambda works on both 1.x and 2.x.
+_trapezoid = getattr(np, "trapezoid", None) or np.trapz
  
 # ---------------------------------------------------------------------------
 # Default channel columns for the acoustic sensor CSV.
@@ -28,7 +32,7 @@ FEATURE_REGISTRY: dict[str, callable] = {
     # Additional features for slow-moving signals (temperature, pressure)
     "mean": lambda x: float(np.mean(x)),
     "gradient_mean": lambda x: float(np.mean(np.abs(np.diff(x)))),
-    "integrated_area": lambda x: float(np.trapz(np.abs(x))),
+    "integrated_area": lambda x: float(_trapezoid(np.abs(x))),
     "fft_band_low":  lambda x: float(np.sum(np.abs(np.fft.rfft(x))[:len(x)//16])),   # 0–800 Hz
     "fft_band_mid":  lambda x: float(np.sum(np.abs(np.fft.rfft(x))[len(x)//16:len(x)//4])),  # 800–3.2 kHz
     "fft_band_high": lambda x: float(np.sum(np.abs(np.fft.rfft(x))[len(x)//4:])),     # 3.2 kHz+

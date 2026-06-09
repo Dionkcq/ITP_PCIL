@@ -26,6 +26,11 @@ async function handle(res) {
   return res.json()
 }
 
+// Service metadata — used by the header's connectivity indicator.
+export function ping() {
+  return fetch(`${BASE}/`).then(handle)
+}
+
 // ── Diagnosis (Pipeline #1-#3) ─────────────────────────────────────
 
 // Run on the CSV named in the config's trigger.source.
@@ -81,5 +86,8 @@ export function trainAnomaly(f) {
   if (f.file) fd.append('file', f.file)
   if (f.cleanFile) fd.append('clean_file', f.cleanFile)
   if (f.anomalyFile) fd.append('anomaly_file', f.anomalyFile)
+  // Irregular-only knobs; the endpoint has safe defaults for both.
+  if (f.valueColumn) fd.append('value_column', f.valueColumn)
+  if (f.windowSeconds) fd.append('window_seconds', f.windowSeconds)
   return fetch(`${BASE}/anomaly/train`, { method: 'POST', body: fd }).then(handle)
 }

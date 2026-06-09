@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { ORCHESTRATOR_URL } from './api.js'
+import { useEffect, useState } from 'react'
+import { ORCHESTRATOR_URL, ping } from './api.js'
 import DiagnosisTab from './tabs/DiagnosisTab.jsx'
 import AnomalyTab from './tabs/AnomalyTab.jsx'
 import TrainTab from './tabs/TrainTab.jsx'
@@ -12,6 +12,22 @@ const TABS = [
 
 export default function App() {
   const [tab, setTab] = useState('diagnosis')
+  // null = unknown (first check pending), true/false afterwards.
+  const [online, setOnline] = useState(null)
+
+  useEffect(() => {
+    let alive = true
+    const check = () =>
+      ping()
+        .then(() => alive && setOnline(true))
+        .catch(() => alive && setOnline(false))
+    check()
+    const id = setInterval(check, 30000)
+    return () => {
+      alive = false
+      clearInterval(id)
+    }
+  }, [])
 
   // All tabs stay mounted (toggled with display) so their state — including
   // the diagnosis history — survives switching between them.
@@ -22,7 +38,15 @@ export default function App() {
           <span className="logo">PCIL</span>
           <span className="subtitle">Operator Dashboard</span>
         </div>
-        <div className="api-pill">API: {ORCHESTRATOR_URL}</div>
+        <div
+          className="api-pill"
+          title={online === false ? 'Orchestrator unreachable' : 'Orchestrator online'}
+        >
+          <span
+            className={`status-dot ${online ? 'on' : online === false ? 'off' : ''}`}
+          />
+          API: {ORCHESTRATOR_URL}
+        </div>
       </header>
 
       <nav className="tabs">

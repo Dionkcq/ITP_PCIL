@@ -27,6 +27,26 @@ const TARGET_LABELS = {
 const pct = (v) => `${(v * 100).toFixed(1)}%`
 const tone = (v) => (v >= 0.85 ? 'good' : v >= 0.6 ? 'warn' : 'bad')
 
+// Small SVG ring gauge — fill fraction matches the KPI value.
+function Ring({ value }) {
+  const r = 23
+  const c = 2 * Math.PI * r
+  const frac = Math.max(0, Math.min(1, value))
+  return (
+    <svg className="ring" viewBox="0 0 56 56" width="56" height="56" aria-hidden="true">
+      <circle className="ring-track" cx="28" cy="28" r={r} />
+      <circle
+        className="ring-fill"
+        cx="28"
+        cy="28"
+        r={r}
+        strokeDasharray={`${frac * c} ${c}`}
+        transform="rotate(-90 28 28)"
+      />
+    </svg>
+  )
+}
+
 export function KpiCards({ summary }) {
   if (!summary || Object.keys(summary).length === 0) return null
   const ordered = [
@@ -37,8 +57,11 @@ export function KpiCards({ summary }) {
     <section className="kpi-row">
       {ordered.map((k) => (
         <div key={k} className={`kpi-card ${tone(summary[k])}`}>
-          <div className="kpi-value">{pct(summary[k])}</div>
-          <div className="kpi-label">{TARGET_LABELS[k] ?? k}</div>
+          <div className="kpi-body">
+            <div className="kpi-value">{pct(summary[k])}</div>
+            <div className="kpi-label">{TARGET_LABELS[k] ?? k}</div>
+          </div>
+          <Ring value={summary[k]} />
         </div>
       ))}
     </section>
@@ -153,26 +176,103 @@ export function DiagnosisResult({ data }) {
   )
 }
 
-// ── Anomaly score strip ────────────────────────────────────────────
-export function ScoreStrip({ scores, threshold }) {
+// ── Anomaly score chart ────────────────────────────────────────────
+// Hand-rolled SVG bar chart (project decision: no chart-lib dependency).
+// Y axis with ticks, a dashed threshold line, and per-bar tooltips that
+// include the cycle/window timestamp when the API provides one.
+export function ScoreChart({ scores, threshold, labels }) {
   if (!scores || scores.length === 0) {
     return <div className="muted">No cycles / windows detected in the input.</div>
   }
-  const max = Math.max(...scores, 1e-9)
+  const W = 860
+  const H = 210
+  const PAD_L = 52
+  const PAD_R = 12
+  const PAD_T = 12
+  const PAD_B = 26
+  const plotW = W - PAD_L - PAD_R
+  const plotH = H - PAD_T - PAD_B
+
+  // Headroom so the tallest bar / threshold line never touches the frame.
+  const maxV = Math.max(...scores, threshold ?? 0, 1e-9) * 1.08
+  const n = scores.length
+  const slot = plotW / n
+  const gap = slot > 6 ? 2 : slot > 2 ? 1 : 0
+  const barW = Math.max(1, slot - gap)
+  const yOf = (v) => PAD_T + plotH - (v / maxV) * plotH
+
+  const ticks = [0, maxV / 2, maxV]
+  const fmt = (v) => (maxV >= 100 ? v.toFixed(0) : maxV >= 1 ? v.toFixed(2) : v.toFixed(3))
+  const labelOf = (i) => {
+    const t = labels?.[i]
+    return t ? `${t}` : `#${i}`
+  }
+
   return (
-    <div className="score-strip">
-      {scores.map((s, i) => {
-        const h = Math.max(2, (s / max) * 100)
-        const flagged = threshold != null && s > threshold
-        return (
-          <div
-            key={i}
-            className={`score-bar ${flagged ? 'flagged' : ''}`}
-            style={{ height: `${h}%` }}
-            title={`#${i}: ${s.toFixed(3)}${flagged ? ' (flagged)' : ''}`}
-          />
-        )
-      })}
+    <div className="chart-wrap">
+      <svg className="score-chart" viewBox={`0 0 ${W} ${H}`} role="img">
+        {ticks.map((t, i) => (
+          <g key={i}>
+            <line
+              className="grid-line"
+              x1={PAD_L}
+              y1={yOf(t)}
+              x2={W - PAD_R}
+              y2={yOf(t)}
+            />
+            <text className="tick-label" x={PAD_L - 8} y={yOf(t) + 4} textAnchor="end">
+              {fmt(t)}
+            </text>
+          </g>
+        ))}
+
+        {scores.map((s, i) => {
+          const flagged = threshold != null && s > threshold
+          const h = Math.max(2, (s / maxV) * plotH)
+          return (
+            <rect
+              key={i}
+              className={`chart-bar ${flagged ? 'flagged' : ''}`}
+              x={PAD_L + i * slot + gap / 2}
+              y={PAD_T + plotH - h}
+              width={barW}
+              height={h}
+              rx={barW > 3 ? 1.5 : 0}
+            >
+              <title>
+                {`${labelOf(i)}\nscore ${s.toFixed(4)}${flagged ? '  (flagged)' : ''}`}
+              </title>
+            </rect>
+          )
+        })}
+
+        {threshold != null && (
+          <g>
+            <line
+              className="threshold-line"
+              x1={PAD_L}
+              y1={yOf(threshold)}
+              x2={W - PAD_R}
+              y2={yOf(threshold)}
+            />
+            <text
+              className="threshold-label"
+              x={W - PAD_R - 4}
+              y={yOf(threshold) - 5}
+              textAnchor="end"
+            >
+              threshold {fmt(threshold)}
+            </text>
+          </g>
+        )}
+
+        <text className="tick-label" x={PAD_L} y={H - 8}>
+          {labelOf(0)}
+        </text>
+        <text className="tick-label" x={W - PAD_R} y={H - 8} textAnchor="end">
+          {labelOf(n - 1)}
+        </text>
+      </svg>
     </div>
   )
 }

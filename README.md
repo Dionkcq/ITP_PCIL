@@ -34,11 +34,12 @@ Orchestrator** (`pcil/orchestrator.py`). It exposes endpoints for:
 - Training and scoring per-machine anomaly models
   (`/anomaly/train`, `/anomaly/score`).
 
-Anomaly detection is split into two specialist subpackages — cyclical
-(periodic signals like pressure) and non_cyclical (continuous signals
-like acoustic vibration). The engineering team's ingestion calls
-`/anomaly/score` over HTTP and writes the returned score into the
-shop-floor database themselves.
+Anomaly detection is split into three specialist subpackages —
+cyclical (periodic signals like pressure), non_cyclical (continuous
+uniformly-sampled signals like acoustic vibration), and irregular
+(irregularly-sampled data like event logs and on-change sensors). The
+engineering team's ingestion calls `/anomaly/score` over HTTP and
+writes the returned score into the shop-floor database themselves.
 
 ---
 
@@ -156,6 +157,25 @@ The CSV must have the four channel columns the Random Forest expects
 25.6 kHz; pass a smaller value (e.g. `-F "window_size_rows=20"`) for
 short recordings.
 
+For irregularly-sampled data (event logs, on-change sensors), train the
+irregular pipeline on a normal-operation CSV with `machine_id` +
+`timestamp` columns (plus an optional numeric value column):
+
+```bash
+curl -X POST http://localhost:8000/anomaly/train \
+     -F "model_type=irregular" \
+     -F "training_mode=normal_only" \
+     -F "model_id=inkjet_01" \
+     -F "window_seconds=1.0" \
+     -F "value_column=signal_value" \
+     -F "file=@irregular_dataset.csv"
+```
+
+It slices on fixed-DURATION time windows (not row counts, which assume
+a uniform sample rate), extracts event-rate + inter-arrival-gap
+features, and fits an unsupervised IsolationForest. See
+`pcil/utils/anomaly/irregular/README.md` for the design.
+
 ### B. Score an anomaly
 
 Once a bundle exists on disk, `POST /anomaly/score` accepts a chunk of
@@ -184,9 +204,17 @@ Returns:
   "input_rows": 2,
   "cycles_scored": 0,
   "anomaly_scores": [],
+  "is_anomaly": [],
+  "threshold": 0.62,
   "bundle_path": "/app/data/cyclical_inkjet_01.pkl"
 }
 ```
+
+Cyclical and irregular responses include `is_anomaly` flags computed
+against the `threshold` stored in the bundle at train time (95th
+percentile of training scores). Non-cyclical scores are already
+class probabilities from the supervised Random Forest, so callers
+threshold those directly (e.g. at 0.5).
 
 **What SIMTech does with the result:** take the `anomaly_scores`
 array, decide which row of the shop-floor DB it maps to (only SIMTech's
@@ -230,18 +258,21 @@ PCIL_dev/
 │   ├── trigger.py                   # slice_by_time / slice_last_n_rows helpers
 │   ├── rag/                         # Pipeline #3 (Robin)
 │   │   ├── loader.py                # DOCX -> RecoveryRecord list
-│   │   ├── lookup.py                # keyword bag-of-words retrieval
+│   │   ├── lookup.py                # TF-IDF + cosine-similarity retrieval
 │   │   └── composer.py              # Gemini API call -> operator paragraph
 │   └── utils/anomaly/
 │       ├── base.py                  # AnomalyModel ABC + PerMachineNormaliser
-│       ├── cyclical/                # Jaymon's IsolationForest pipeline
+│       ├── cyclical/                # Jaymon's 1D CNN autoencoder pipeline
 │       │   ├── slice.py, features.py, model.py, train.py, score.py
 │       │   └── prepare_data.py
-│       └── non_cyclical/            # Zi Hin's RandomForest pipeline
-│           ├── slice.py, features.py, model.py, score.py
-│           ├── train.py             # reusable training fn (used by /anomaly/train)
-│           ├── run.py               # CLI wrapper around train.py
-│           └── non_cyclical_config.yaml
+│       ├── non_cyclical/            # Zi Hin's RandomForest pipeline
+│       │   ├── slice.py, features.py, model.py, score.py
+│       │   ├── train.py             # reusable training fn (used by /anomaly/train)
+│       │   ├── run.py               # CLI wrapper around train.py
+│       │   └── non_cyclical_config.yaml
+│       └── irregular/               # event-log / on-change-sensor pipeline
+│           ├── slice.py, features.py, model.py, train.py, score.py
+│           └── README.md            # design rationale + tuning notes
 ├── machines/inkjet_printer/         # one folder per machine
 │   ├── config.yaml                  # recipe — trigger, schema, feature descriptions
 │   └── output/                      # generated golden DF / impacts JSON / .pkl
@@ -260,7 +291,11 @@ PCIL_dev/
     ├── test_pipeline_run.py
     ├── test_pipeline_run_csv.py
     ├── test_anomaly_score.py
-    └── test_anomaly_train.py
+    ├── test_anomaly_train.py
+    ├── test_anomaly_irregular.py
+    ├── test_rag_lookup.py
+    ├── test_rag_loader.py
+    └── test_dashboard.py
 ```
 
 The raw machine data lives **outside** this repo (it's too big for
@@ -281,6 +316,10 @@ python -m pcil.utils.anomaly.cyclical.train --input ../data/cyclical_dataset.csv
 
 # Train non-cyclical via CLI (uses non_cyclical_config.yaml paths)
 python pcil/utils/anomaly/non_cyclical/run.py
+
+# Train + score irregular via CLI
+python -m pcil.utils.anomaly.irregular.train --input ../data/irregular_dataset.csv --output ../data/irregular_inkjet_01.pkl
+python -m pcil.utils.anomaly.irregular.score --input ../data/irregular_eval.csv --model ../data/irregular_inkjet_01.pkl --output ../data/irregular_eval_scored.csv
 
 # Run Pipeline #1 via CLI (legacy)
 python -m pcil.preprocess --input ../data/mock_shop_floor.csv --config inkjet_printer
@@ -363,16 +402,17 @@ The container expects two things mounted in at runtime:
 
 ---
 
-## Status (Week 3 follow-up, 30 May 2026)
+## Status (NUC-test prep, 10 June 2026)
 
 | Component | Status |
 |---|---|
 | Pipeline #1 (preprocess) | working — sklearn `ColumnTransformer` (MinMaxScaler + OneHotEncoder) |
 | Pipeline #2 (context model) | working — multi-target `LinearRegression` + new Week-3 impacts JSON schema |
-| Pipeline #3 (RAG) | working — DOCX loader, keyword lookup, Gemini composer wired into `/pipeline/run` |
-| Orchestrator | working — 5 endpoints, Docker image, 23 pytest tests pass |
-| Anomaly: cyclical | working — Jaymon's IsolationForest (peak slicing + waveform features) |
+| Pipeline #3 (RAG) | working — DOCX loader, TF-IDF lookup, Gemini composer wired into `/pipeline/run` |
+| Orchestrator | working — 5 endpoints, Docker image, 45 pytest tests pass |
+| Anomaly: cyclical | working — Jaymon's 1D CNN autoencoder (peak slicing + waveform features) |
 | Anomaly: non_cyclical | working — Zi Hin's RandomForest (~0.68 recall on labelled acoustic dataset) |
-| LLM composer | working — Gemini (`gemini-2.5-flash` via `google-genai`), graceful fallback when key is unset |
+| Anomaly: irregular | working — time-window + arrival-pattern IsolationForest (pipeline definition; demoed on synthetic event data, no real irregular dataset yet) |
+| LLM composer | working — Gemini (`gemini-2.5-flash` via `google-genai`, 30 s timeout), records survive composer failures |
 | `rag_frontend/` (optional Flask demo UI) | working — proxy-only client, not in the Docker image |
 | Operator dashboard | working — React + Vite client, served by the orchestrator at `/dashboard/` and bundled into the Docker image via multi-stage build |

@@ -58,6 +58,7 @@ from pcil.rag.composer import compose_recommendation
 from pcil.rag.loader import load_all_recovery_docs
 from pcil.rag.lookup import lookup_keywords
 from pcil.utils.anomaly.cyclical.score import score as cyclical_score
+from pcil.utils.anomaly.irregular.score import score as irregular_score
 from pcil.utils.anomaly.non_cyclical.score import score as non_cyclical_score
 
 # Project root for resolving relative data paths (e.g. anomaly bundles).
@@ -168,7 +169,7 @@ class AnomalyScoreRequest(BaseModel):
         ...,
         description="Time-series rows. Schema depends on the anomaly model.",
     )
-    model_type: Literal["cyclical", "non_cyclical"] = Field(
+    model_type: Literal["cyclical", "non_cyclical", "irregular"] = Field(
         ...,
         description="Which anomaly model to invoke.",
     )
@@ -325,18 +326,31 @@ def _run_pipeline_on_df(
         artifact_paths = {"impacts_json": str(json_path), "model_pkl": str(pkl_path)}
 
     # --- RAG retrieval + LLM composition ---------------------------
+    # Retrieval and composition are guarded separately: retrieval is
+    # fully local (DOCX files on disk), composition needs the Gemini
+    # API. If only composition fails (no key, no internet, timeout),
+    # the operator still gets the retrieved recovery records.
     if RAG_DIR.is_dir():
         try:
             rag_query = _build_rag_query(impacts)
             all_records = load_all_recovery_docs(RAG_DIR)
             recovery_records = lookup_keywords(rag_query, all_records, top_k=3)
-            operator_recommendation = compose_recommendation(impacts, recovery_records)
         except Exception as exc:  # noqa: BLE001
             recovery_records = []
             operator_recommendation = (
                 f"RAG retrieval failed ({type(exc).__name__}): {exc}. "
                 "Review the impacts data manually."
             )
+        else:
+            try:
+                operator_recommendation = compose_recommendation(
+                    impacts, recovery_records,
+                )
+            except Exception as exc:  # noqa: BLE001
+                operator_recommendation = (
+                    f"LLM composition failed ({type(exc).__name__}): {exc}. "
+                    "Review the recovery records below manually."
+                )
     else:
         recovery_records = []
         operator_recommendation = (
@@ -602,6 +616,12 @@ def _score_cyclical(req: "AnomalyScoreRequest") -> dict:
         "input_rows": int(len(df)),
         "cycles_scored": int(len(scored)),
         "anomaly_scores": scored["anomaly_score"].tolist(),
+        "is_anomaly": (
+            scored["is_anomaly"].tolist()
+            if "is_anomaly" in scored.columns
+            else None
+        ),
+        "threshold": bundle.get("threshold"),
         "cycle_start_timestamps": (
             scored["cycle_start_timestamp"].astype(str).tolist()
             if "cycle_start_timestamp" in scored.columns
@@ -611,20 +631,81 @@ def _score_cyclical(req: "AnomalyScoreRequest") -> dict:
     }
 
 
+def _score_irregular(req: "AnomalyScoreRequest") -> dict:
+    if not req.data:
+        raise HTTPException(
+            status_code=400,
+            detail="'data' must contain at least one row of sensor data",
+        )
+
+    model_id = req.model_id or "inkjet_01"
+    bundle_path = _anomaly_bundle_path("irregular", model_id)
+    if not bundle_path.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"irregular bundle not found at {bundle_path}. "
+                "Train one first via POST /anomaly/train (model_type=irregular, "
+                "training_mode=normal_only) or the irregular train.py CLI."
+            ),
+        )
+
+    bundle = joblib.load(bundle_path)
+    df = pd.DataFrame(req.data)
+
+    # irregular.score() needs timestamp_column + machine_id_column
+    # (+ value_column when the bundle was trained with one).
+    required_cols = {
+        bundle["timestamp_column"],
+        bundle["machine_id_column"],
+    }
+    if bundle.get("value_column"):
+        required_cols.add(bundle["value_column"])
+    missing = required_cols - set(df.columns)
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Input rows missing required columns: {sorted(missing)}. "
+                f"Bundle expects: {sorted(required_cols)}."
+            ),
+        )
+
+    try:
+        scored = irregular_score(df, bundle)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {
+        "status": "ok",
+        "model_type": "irregular",
+        "model_id": model_id,
+        "input_rows": int(len(df)),
+        "windows_scored": int(len(scored)),
+        "anomaly_scores": scored["anomaly_score"].tolist(),
+        "is_anomaly": scored["is_anomaly"].tolist(),
+        "threshold": bundle.get("threshold"),
+        "window_start_timestamps": (
+            scored["window_start_timestamp"].astype(str).tolist()
+        ),
+        "bundle_path": str(bundle_path),
+    }
+
+
 @app.post("/anomaly/train", tags=["anomaly"])
 async def anomaly_train(
-    model_type: Literal["cyclical", "non_cyclical"] = Form(
+    model_type: Literal["cyclical", "non_cyclical", "irregular"] = Form(
         ..., description="Which subpackage to train."),
     training_mode: Literal["normal_only", "clean_vs_anomaly"] = Form(
         ..., description=(
-            "cyclical accepts 'normal_only'; non_cyclical accepts "
-            "'clean_vs_anomaly'.")),
+            "cyclical and irregular accept 'normal_only'; non_cyclical "
+            "accepts 'clean_vs_anomaly'.")),
     model_id: str = Form(
         "inkjet_01",
         description="Identifier used in the saved bundle filename."),
     file: UploadFile | None = File(
         None,
-        description="cyclical normal_only: training CSV with the signal column."),
+        description="cyclical/irregular normal_only: training CSV."),
     clean_file: UploadFile | None = File(
         None,
         description="non_cyclical clean_vs_anomaly: clean recording CSV."),
@@ -638,13 +719,20 @@ async def anomaly_train(
                     "isolation_forest is the lightweight fallback."),
     machine_id_column: str = Form(
         "machine_id",
-        description="Cyclical only — column containing the machine identifier."),
+        description="Cyclical/irregular — column containing the machine identifier."),
     signal_column: str = Form(
         "signal_value",
         description="Cyclical only — column containing the cyclic signal."),
     timestamp_column: str = Form(
         "timestamp",
-        description="Cyclical only — column containing the timestamps."),
+        description="Cyclical/irregular — column containing the timestamps."),
+    value_column: str | None = Form(
+        None,
+        description="Irregular only — optional numeric column for value_* "
+                    "features. Omit for pure event logs."),
+    window_seconds: float = Form(
+        1.0,
+        description="Irregular only — window duration in wall-clock seconds."),
     window_size_rows: int = Form(
         12800,
         description="Non-cyclical only — rows per fixed window. "
@@ -675,6 +763,16 @@ async def anomaly_train(
         Uses Zi Hin's supervised RandomForest pipeline. Fixed windows
         on each recording; clean=0, anomaly=1; per-machine z-score
         normaliser fit on clean training only.
+
+    Combination C — Irregular
+        model_type=irregular
+        training_mode=normal_only
+        file=<CSV with machine_id_column, timestamp_column
+              (+ optional value_column)>
+
+        For irregularly-sampled data (event logs, on-change sensors).
+        Fixed-duration time windows; event-rate + inter-arrival-gap
+        features; unsupervised IsolationForest.
 
     The bundle is saved to:
         <PROJECT_ROOT>/data/<model_type>_<model_id>.pkl
@@ -738,14 +836,50 @@ async def anomaly_train(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         input_rows = int(len(clean_df) + len(anomaly_df))
 
+    elif model_type == "irregular" and training_mode == "normal_only":
+        if file is None:
+            raise HTTPException(
+                status_code=400,
+                detail=("irregular normal_only requires the 'file' form field "
+                        "(the training CSV)."),
+            )
+        df = await _read_upload_to_df(file)
+        required = {machine_id_column, timestamp_column}
+        if value_column:
+            required.add(value_column)
+        missing = required - set(df.columns)
+        if missing:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"uploaded CSV is missing required columns: {sorted(missing)}. "
+                    f"Expected columns: {sorted(required)}. "
+                    "Adjust the form fields machine_id_column / timestamp_column / "
+                    "value_column if your headers differ."
+                ),
+            )
+        from pcil.utils.anomaly.irregular.train import train as irregular_train_fn
+        try:
+            bundle = irregular_train_fn(
+                df,
+                machine_id_column=machine_id_column,
+                timestamp_column=timestamp_column,
+                value_column=value_column or None,
+                window_seconds=window_seconds,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        input_rows = int(len(df))
+
     else:
         raise HTTPException(
             status_code=400,
             detail=(
                 f"unsupported combination: model_type={model_type!r}, "
                 f"training_mode={training_mode!r}. "
-                "Supported: 'cyclical' + 'normal_only', or "
-                "'non_cyclical' + 'clean_vs_anomaly'."
+                "Supported: 'cyclical' + 'normal_only', "
+                "'non_cyclical' + 'clean_vs_anomaly', or "
+                "'irregular' + 'normal_only'."
             ),
         )
 
@@ -776,13 +910,20 @@ def anomaly_score(req: AnomalyScoreRequest) -> dict:
     against the labelled acoustic dataset). Needs a trained bundle on
     disk at `data/non_cyclical_<model_id>.pkl`.
 
-    Cyclical: wired to Jaymon's IsolationForestModel (peak slicing +
+    Cyclical: wired to Jaymon's 1D CNN autoencoder (peak slicing +
     waveform features). Needs a trained bundle on disk at
     `data/cyclical_<model_id>.pkl`.
+
+    Irregular: fixed-duration time windows + arrival-pattern features +
+    IsolationForest, for irregularly-sampled data (event logs,
+    on-change sensors). Needs a trained bundle on disk at
+    `data/irregular_<model_id>.pkl`.
     """
     if req.model_type == "non_cyclical":
         return _score_non_cyclical(req)
     if req.model_type == "cyclical":
         return _score_cyclical(req)
+    if req.model_type == "irregular":
+        return _score_irregular(req)
     # Should never reach here — Literal type bound catches it at request parse.
     raise HTTPException(status_code=400, detail=f"unknown model_type: {req.model_type}")

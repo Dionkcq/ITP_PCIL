@@ -12,6 +12,11 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from pcil.rag.loader import RecoveryRecord
 
+# Cap the Gemini HTTP round-trip (milliseconds). On a firewalled network
+# the connection can be blackholed rather than refused; without a timeout
+# the request hangs instead of falling back to the records-only response.
+_LLM_TIMEOUT_MS: int = 30_000
+
 
 def compose_recommendation(
     impacts: dict,
@@ -56,8 +61,17 @@ def compose_recommendation(
     try:
         from google import genai  # noqa: PLC0415
 
-        client = genai.Client(api_key=api_key)
+        client = genai.Client(
+            api_key=api_key,
+            http_options={"timeout": _LLM_TIMEOUT_MS},
+        )
         response = client.models.generate_content(model=model, contents=prompt)
+        if not response.text:
+            # Safety-filtered or empty response — degrade like an API error.
+            return (
+                "LLM returned an empty response. "
+                "Review the recovery records below manually."
+            )
         return response.text.strip()
     except Exception as exc:  # noqa: BLE001
         return (

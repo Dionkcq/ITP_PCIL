@@ -1,13 +1,26 @@
 """
-RAG keyword lookup
-===================
-Given a query string and a list of RecoveryRecord, return matching records.
+RAG lookup
+===========
+Given a query string and a list of RecoveryRecord, return the most
+relevant records.
 
-v1: plain substring match against `error` / `cause` fields.
-v2 (stretch): vector embeddings + cosine similarity.
+v1: keyword bag-of-words count (substring match against error/cause).
+v2 (current): TF-IDF + cosine similarity over the error/cause text.
+
+Why TF-IDF over the v1 keyword count
+-------------------------------------
+- Word-boundary tokenisation: the v1 substring check matched "low"
+  inside "flow"/"below", inflating scores for unrelated records.
+- Term weighting: a word that appears in nearly every record (e.g.
+  "machine") barely discriminates; TF-IDF down-weights it, while a
+  rare, specific word ("misalignment") counts for more.
+- Still fully local and deterministic — no embeddings API, no network.
+  Uses scikit-learn, which is already a core project dependency.
 """
 
 from __future__ import annotations
+
+from sklearn.feature_extraction.text import TfidfVectorizer
 
 from pcil.rag.loader import RecoveryRecord
 
@@ -26,36 +39,38 @@ def lookup_keywords(
     top_k: int = 3,
 ) -> list[RecoveryRecord]:
     """
-    Return the top_k records whose `error` or `cause` field contains
-    the most matching tokens from `query`.
+    Return the top_k records ranked by TF-IDF cosine similarity between
+    `query` and each record's `error` + `cause` text.
 
-    TODO (teammate):
-      1. Lowercase + tokenise the query (split on whitespace, drop
-         common stopwords like "the", "is", etc.).
-      2. For each record, count how many query tokens appear in
-         record["error"] + record["cause"].
-      3. Sort records by count descending, return top_k.
-      4. If nothing matches, return an empty list.
+    Records with zero similarity (no shared vocabulary) are excluded,
+    so the result can be shorter than top_k — or empty when nothing
+    matches at all.
 
-    Stretch:
-      - Use sentence-transformers + cosine similarity instead of a
-        bag-of-words count.
-      - Re-rank with the LLM after retrieval.
+    The name says "keywords" for backwards compatibility with v1; the
+    query is still a plain space-separated keyword string (built by the
+    orchestrator's _build_rag_query()).
     """
     if not query or not records:
-      return []
-
-    tokens = [
-        t for t in query.lower().split()
-        if t not in _STOPWORDS and len(t) > 2
-    ]
-    if not tokens:
         return []
 
-    def score(record: RecoveryRecord) -> int:
-      haystack = (record["error"] + " " + record["cause"]).lower()
-      return sum(1 for t in tokens if t in haystack)
+    corpus = [f"{r['error']} {r['cause']}" for r in records]
 
-    scored = [(score(r), r) for r in records]
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return [r for count, r in scored[:top_k] if count > 0]
+    vectoriser = TfidfVectorizer(
+        lowercase=True,
+        stop_words=list(_STOPWORDS),
+        token_pattern=r"(?u)\b\w\w\w+\b",  # 3+ chars, mirrors v1's len > 2 filter
+    )
+    try:
+        doc_matrix = vectoriser.fit_transform(corpus)
+        query_vec = vectoriser.transform([query])
+    except ValueError:
+        # Corpus or query reduced to an empty vocabulary (e.g. all
+        # stopwords) — nothing meaningful to rank against.
+        return []
+
+    # TfidfVectorizer output is L2-normalised, so the dot product IS the
+    # cosine similarity.
+    similarities = (doc_matrix @ query_vec.T).toarray().ravel()
+
+    ranked = sorted(range(len(records)), key=lambda i: similarities[i], reverse=True)
+    return [records[i] for i in ranked[:top_k] if similarities[i] > 0.0]

@@ -8,18 +8,23 @@ export default function TrainTab() {
   const [file, setFile] = useState(null)
   const [cleanFile, setCleanFile] = useState(null)
   const [anomalyFile, setAnomalyFile] = useState(null)
+  const [valueColumn, setValueColumn] = useState('')
+  const [windowSeconds, setWindowSeconds] = useState('1.0')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [result, setResult] = useState(null)
+
+  // cyclical + irregular train on one normal-operation CSV;
+  // non_cyclical trains on a labelled clean/anomaly pair.
+  const singleFile = modelType === 'cyclical' || modelType === 'irregular'
 
   async function handleTrain() {
     setLoading(true)
     setError(null)
     try {
-      const trainingMode =
-        modelType === 'cyclical' ? 'normal_only' : 'clean_vs_anomaly'
-      if (modelType === 'cyclical' && !file) {
-        throw new Error('Cyclical training needs a normal-data CSV.')
+      const trainingMode = singleFile ? 'normal_only' : 'clean_vs_anomaly'
+      if (singleFile && !file) {
+        throw new Error('Training needs a normal-operation CSV.')
       }
       if (modelType === 'non_cyclical' && (!cleanFile || !anomalyFile)) {
         throw new Error('Non-cyclical training needs both a clean and an anomaly CSV.')
@@ -28,10 +33,12 @@ export default function TrainTab() {
         modelType,
         trainingMode,
         modelId,
-        modelName,
+        modelName: modelType === 'cyclical' ? modelName : null,
         file,
         cleanFile,
         anomalyFile,
+        valueColumn: modelType === 'irregular' ? valueColumn : null,
+        windowSeconds: modelType === 'irregular' ? windowSeconds : null,
       })
       setResult(res)
     } catch (e) {
@@ -51,6 +58,7 @@ export default function TrainTab() {
             <select value={modelType} onChange={(e) => setModelType(e.target.value)}>
               <option value="cyclical">cyclical</option>
               <option value="non_cyclical">non_cyclical</option>
+              <option value="irregular">irregular</option>
             </select>
           </label>
           <label className="field">
@@ -66,11 +74,34 @@ export default function TrainTab() {
               </select>
             </label>
           )}
+          {modelType === 'irregular' && (
+            <>
+              <label className="field">
+                <span>Value column (optional)</span>
+                <input
+                  value={valueColumn}
+                  placeholder="e.g. signal_value"
+                  onChange={(e) => setValueColumn(e.target.value)}
+                />
+              </label>
+              <label className="field">
+                <span>Window (seconds)</span>
+                <input
+                  value={windowSeconds}
+                  onChange={(e) => setWindowSeconds(e.target.value)}
+                />
+              </label>
+            </>
+          )}
         </div>
 
-        {modelType === 'cyclical' ? (
+        {singleFile ? (
           <label className="field">
-            <span>Normal-data CSV (signal_value / machine_id / timestamp)</span>
+            <span>
+              {modelType === 'cyclical'
+                ? 'Normal-data CSV (signal_value / machine_id / timestamp)'
+                : 'Normal-data CSV (machine_id / timestamp, + value column if set)'}
+            </span>
             <input
               type="file"
               accept=".csv"

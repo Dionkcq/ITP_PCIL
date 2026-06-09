@@ -129,6 +129,57 @@ def test_run_csv_returns_rag_recommendation_when_rag_dir_present(
     assert body["recovery_records"][0]["source_doc"] == "Inkjet.docx"
 
 
+def test_run_csv_keeps_records_when_llm_fails(
+    client, shop_floor_tiny_path, monkeypatch, tmp_path,
+):
+    """Degradation path: retrieval succeeds but the composer raises
+    (missing GEMINI_API_KEY, no internet, timeout). The retrieved
+    recovery_records must SURVIVE — only the recommendation degrades
+    to a fallback string. Regression test for the 2026-06-10 fix:
+    previously a composer exception escaped to the retrieval handler,
+    which zeroed out the records and mislabelled the failure as
+    'RAG retrieval failed'."""
+    import pcil.orchestrator as orch
+
+    fake_rag_dir = tmp_path / "RAG"
+    fake_rag_dir.mkdir()
+    fake_records = [{
+        "error": "Print head clog",
+        "cause": "Dried ink in nozzle",
+        "recovery": "Run cleaning cycle and prime the head.",
+        "source_doc": "Inkjet.docx",
+    }]
+
+    def _composer_boom(impacts, records):
+        raise RuntimeError("GEMINI_API_KEY environment variable is not set.")
+
+    monkeypatch.setattr(orch, "RAG_DIR", fake_rag_dir)
+    monkeypatch.setattr(
+        orch, "load_all_recovery_docs", lambda _path: fake_records,
+    )
+    monkeypatch.setattr(
+        orch, "lookup_keywords",
+        lambda query, records, top_k=3: records[:top_k],
+    )
+    monkeypatch.setattr(orch, "compose_recommendation", _composer_boom)
+
+    with open(shop_floor_tiny_path, "rb") as f:
+        r = client.post(
+            "/pipeline/run_csv",
+            data={"config_path": DEFAULT_CONFIG, "persist": "false"},
+            files={"file": ("shop_floor_tiny.csv", f, "text/csv")},
+        )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # Records survive the composer failure.
+    assert len(body["recovery_records"]) == 1
+    assert body["recovery_records"][0]["error"] == "Print head clog"
+    # Recommendation degrades with an honest, correctly-attributed message.
+    assert "LLM composition failed" in body["operator_recommendation"]
+    # Pipelines #1/#2 unaffected.
+    assert body["impacts"]["system"] == "inkjet_printer"
+
+
 def test_run_csv_falls_back_when_rag_dir_missing(
     client, shop_floor_tiny_path, monkeypatch, tmp_path,
 ):
