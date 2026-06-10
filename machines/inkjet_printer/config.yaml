@@ -31,8 +31,13 @@ pipeline:
 # `source` is the data location. For now this is a CSV path
 # (mock shop-floor). Once the engineering team has a real DB
 # it would be a connection string + query instead.
+#
+# Relative paths resolve against the project root (PCIL_PROJECT_ROOT,
+# or two levels above pcil/ when unset) — so "data/x.csv" finds
+# ITP/data/x.csv in dev and /app/data/x.csv in Docker. Paths relative
+# to this config file's folder also still work as a fallback.
 trigger:
-  source: "../../../data/mock_shop_floor.csv"
+  source: "data/mock_shop_floor.csv"
   mode: "all"
   start_time: null              # ISO 8601 UTC, e.g. "2026-05-15T09:00:30+00:00"
   end_time: null                # ISO 8601 UTC

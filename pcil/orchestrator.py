@@ -219,15 +219,28 @@ def _pull_slice(cfg: dict) -> pd.DataFrame:
         )
 
     source_path = Path(source)
+    tried: list[Path] = [source_path]
     if not source_path.is_absolute():
-        # Resolve relative to the config file's directory so paths in
-        # config.yaml don't depend on where the user invoked uvicorn from.
-        source_path = (cfg["_paths"]["config_dir"] / source_path).resolve()
+        # Relative paths resolve against PROJECT_ROOT first — the same
+        # rule as anomaly bundles and RAG_DIR, so "data/x.csv" works
+        # identically in dev (PROJECT_ROOT = ITP/) and in Docker
+        # (PCIL_PROJECT_ROOT=/app, data mounted at /app/data). Fall back
+        # to the config file's directory for recipes written with
+        # config-relative paths like "../../../data/x.csv".
+        tried = [
+            (PROJECT_ROOT / source_path).resolve(),
+            (cfg["_paths"]["config_dir"] / source_path).resolve(),
+        ]
+        source_path = next((p for p in tried if p.is_file()), tried[0])
 
     if not source_path.is_file():
+        also = [str(p) for p in tried if p != source_path]
         raise HTTPException(
             status_code=404,
-            detail=f"trigger.source not found: {source_path}",
+            detail=(
+                f"trigger.source not found: {source_path}"
+                + (f" (also tried: {', '.join(also)})" if also else "")
+            ),
         )
 
     df = pd.read_csv(source_path)
