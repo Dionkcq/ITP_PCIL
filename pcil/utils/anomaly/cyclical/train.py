@@ -2,21 +2,22 @@
 Cyclical anomaly pipeline — train CLI
 ======================================
 Wires the four steps together:
-  1. slice (peak detection)             -> from cyclical/slice.py
-  2. extract waveform features          -> from cyclical/features.py
-  3. per-machine normalisation          -> shared normalise.PerMachineNormaliser
-  4. fit the chosen model               -> from cyclical/model.py
+  1. slice (cycle detection)     -> slice.py  (peak / zero_crossing / fixed_period)
+  2. extract features per cycle  -> features.py (stats / waveform / fft)
+  3. per-machine normalisation   -> PerMachineNormaliser
+  4. fit the chosen model        -> model.py  (isolation_forest / autoencoder)
 
-Saves one fitted pipeline instance as a .pkl bundle containing the
-model, normaliser, and feature column names. The reusable part is this
-pipeline code; the saved .pkl is machine/data-type specific.
+The autoencoder adapts its architecture automatically to whatever feature
+method is used — no need to specify input_len manually.
 
 Run from repo root:
     python -m pcil.utils.anomaly.cyclical.train \\
         --input data/cyclical_dataset.csv \\
         --output data/inkjet_cyclical.pkl
 
-Models: isolation_forest | autoencoder (default: autoencoder)
+Models  : isolation_forest | autoencoder (default: autoencoder)
+Slicing : set SLICE_METHOD in slice.py   (default: peak)
+Features: set FEATURE_METHOD in features.py (default: waveform)
 """
 
 from __future__ import annotations
@@ -24,8 +25,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-import joblib
 import numpy as np
+import joblib
 import pandas as pd
 
 from pcil.utils.anomaly.base import PerMachineNormaliser
@@ -50,11 +51,9 @@ def train(
 ) -> dict:
     """
     Run the full pipeline on `df` and return a bundle dict.
-
-    The bundle contains the fitted model, normaliser, and metadata
-    needed by score.py to score new data.
+    input_len is inferred automatically from the feature matrix shape.
     """
-    # 1. Slice into cycles, extract waveform features per cycle
+    # 1. Slice into cycles, extract features per cycle
     cycle_rows = []
     for machine_id, group in df.groupby(machine_id_column):
         group = group.sort_values(timestamp_column).reset_index(drop=True)
@@ -76,20 +75,16 @@ def train(
         feature_columns=feature_columns,
     )
 
-    # 3. Fit the chosen model
+    # 3. Fit the chosen model — input_len inferred from feature matrix
     model_cls = _MODEL_REGISTRY[model_name]
     model = model_cls(**(model_kwargs or {}))
     X = feature_df_norm[feature_columns].to_numpy(dtype=float)
     model.fit(X)
 
-    # Compute threshold from training scores.
-    # Without ground truth labels at train time, use the 95th percentile
-    # of training scores as a conservative starting threshold — this flags
-    # only the top 5% of training cycles as suspicious.
-    # When labelled eval data is available, call find_best_threshold()
-    # on the scored eval set to refine it.
+    # 4. Compute initial threshold (95th percentile of training scores)
+    # Refine this by running check_scores.py after scoring labelled eval data
     train_scores = model.score(X)
-    best_thresh = float(np.percentile(train_scores, 95))
+    threshold = float(np.percentile(train_scores, 95))
 
     return {
         "model":               model,
@@ -100,7 +95,7 @@ def train(
         "machine_id_column":   machine_id_column,
         "signal_column":       signal_column,
         "timestamp_column":    timestamp_column,
-        "threshold":           best_thresh,
+        "threshold":           threshold,
     }
 
 
