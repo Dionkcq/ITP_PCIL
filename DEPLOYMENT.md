@@ -174,6 +174,9 @@ Base URL: `http://<host>:8000`
 | GET | `/configs/load` | Load a recipe as structured data |
 | POST | `/configs/validate` | Dry-run validation of an edited recipe (nothing written) |
 | POST | `/configs/save` | Validate + save a recipe (timestamped backup kept on overwrite) |
+| POST | `/configs/create` | Create a brand-new machine folder + recipe (never overwrites) |
+| POST | `/configs/delete` | Delete a recipe (recoverable — moved into `.backups/`, not destroyed) |
+| GET | `/anomaly/models` | List the trained `.pkl` bundles present in `data/` |
 | GET | `/docs` | Swagger UI — interactive docs for every endpoint above |
 | GET | `/dashboard/` | Operator dashboard (Diagnosis / Anomaly check / Train / Config recipes tabs) |
 
@@ -225,6 +228,12 @@ Two ways to change it:
   and the previous version is backed up to `machines/<machine>/.backups/`.
   "Save as new" creates a separate recipe (e.g. `config_test2.yaml`) that
   becomes selectable in the Diagnosis tab without touching the original.
+  The tab's **New machine** section creates a whole new machine folder
+  (`machines/<name>/<recipe>.yaml`) from the current form — onboard a
+  second machine without touching the repository at all. One machine can
+  hold several recipes for different purposes ("Save as new"); deleting a
+  recipe moves it into `.backups/` rather than destroying it, so a wrong
+  click is recoverable from disk.
 - **Text editor:** edit the YAML on the host directly. The same validation
   runs when the recipe is used, but there is no backup — the dashboard
   path is safer.

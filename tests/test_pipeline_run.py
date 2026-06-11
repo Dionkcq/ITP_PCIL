@@ -56,20 +56,24 @@ def test_trigger_source_resolves_against_project_root(
     monkeypatch.setattr(orch, "PROJECT_ROOT", tmp_path)
 
     # Config sits in its own subfolder; root-relative source. Reuse the
-    # real recipe so the input schema matches the fixture CSV.
-    real_cfg = (
-        Path(__file__).resolve().parents[1]
-        / "machines" / "inkjet_printer" / "config.yaml"
-    ).read_text(encoding="utf-8")
-    assert 'source: "data/mock_shop_floor.csv"' in real_cfg
+    # real recipe so the input schema matches the fixture CSV. Parse +
+    # re-dump rather than string-replacing: the dashboard config editor
+    # legitimately rewrites the file (no comments, unquoted strings), so
+    # the test must not depend on the YAML's surface formatting.
+    import yaml
+
+    real_cfg = yaml.safe_load(
+        (
+            Path(__file__).resolve().parents[1]
+            / "machines" / "inkjet_printer" / "config.yaml"
+        ).read_text(encoding="utf-8")
+    )
+    assert real_cfg["trigger"]["source"] == "data/mock_shop_floor.csv"
+    real_cfg["trigger"]["source"] = "data/slice_tiny.csv"
     cfg_dir = tmp_path / "machines" / "inkjet_printer"
     cfg_dir.mkdir(parents=True)
     (cfg_dir / "config.yaml").write_text(
-        real_cfg.replace(
-            'source: "data/mock_shop_floor.csv"',
-            'source: "data/slice_tiny.csv"',
-        ),
-        encoding="utf-8",
+        yaml.safe_dump(real_cfg, sort_keys=False), encoding="utf-8"
     )
 
     r = client.post(
@@ -86,19 +90,20 @@ def test_trigger_source_not_found_lists_tried_paths(client, monkeypatch, tmp_pat
     import pcil.orchestrator as orch
     from pathlib import Path
 
+    import yaml
+
     monkeypatch.setattr(orch, "PROJECT_ROOT", tmp_path)
-    real_cfg = (
-        Path(__file__).resolve().parents[1]
-        / "machines" / "inkjet_printer" / "config.yaml"
-    ).read_text(encoding="utf-8")
+    real_cfg = yaml.safe_load(
+        (
+            Path(__file__).resolve().parents[1]
+            / "machines" / "inkjet_printer" / "config.yaml"
+        ).read_text(encoding="utf-8")
+    )
+    real_cfg["trigger"]["source"] = "data/definitely_missing.csv"
     cfg_dir = tmp_path / "cfg"
     cfg_dir.mkdir()
     (cfg_dir / "config.yaml").write_text(
-        real_cfg.replace(
-            'source: "data/mock_shop_floor.csv"',
-            'source: "data/definitely_missing.csv"',
-        ),
-        encoding="utf-8",
+        yaml.safe_dump(real_cfg, sort_keys=False), encoding="utf-8"
     )
 
     r = client.post(

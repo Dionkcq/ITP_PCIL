@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { scoreAnomaly } from '../api.js'
+import { useEffect, useState } from 'react'
+import { listAnomalyModels, scoreAnomaly } from '../api.js'
 import { parseCsvFile } from '../csv.js'
 import { ScoreChart } from '../components.jsx'
 
@@ -23,6 +23,29 @@ export default function AnomalyTab() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [result, setResult] = useState(null)
+  // null = list not fetched yet (indicator stays grey/unknown).
+  const [models, setModels] = useState(null)
+
+  async function refreshModels() {
+    try {
+      const r = await listAnomalyModels()
+      setModels(r.models)
+    } catch {
+      setModels(null) // unreachable API -> unknown, not "missing"
+    }
+  }
+
+  // Refresh on mount and whenever the selection changes, so training a
+  // bundle in the Train tab is picked up the next time the user touches
+  // the selectors (or hits the refresh arrow).
+  useEffect(() => {
+    refreshModels()
+  }, [modelType, modelId])
+
+  const bundle =
+    models?.find((m) => m.model_type === modelType && m.model_id === modelId) ??
+    null
+  const idsForType = models?.filter((m) => m.model_type === modelType) ?? []
 
   async function handleScore() {
     setLoading(true)
@@ -79,7 +102,16 @@ export default function AnomalyTab() {
           </label>
           <label className="field">
             <span>Model ID</span>
-            <input value={modelId} onChange={(e) => setModelId(e.target.value)} />
+            <input
+              value={modelId}
+              list="bundle-ids"
+              onChange={(e) => setModelId(e.target.value)}
+            />
+            <datalist id="bundle-ids">
+              {idsForType.map((m) => (
+                <option key={m.file} value={m.model_id} />
+              ))}
+            </datalist>
           </label>
           <label className="field">
             <span>Skip header rows</span>
@@ -91,6 +123,34 @@ export default function AnomalyTab() {
             />
           </label>
         </div>
+        <div className={`bundle-pill ${bundle ? 'found' : models ? 'missing' : ''}`}>
+          <span
+            className={`status-dot ${bundle ? 'on' : models ? 'off' : ''}`}
+          />
+          {bundle ? (
+            <>
+              Trained bundle loaded: <code>{bundle.file}</code>
+              {' '}({bundle.size_kb} KB, updated {bundle.modified.slice(0, 10)})
+            </>
+          ) : models ? (
+            <>
+              No trained bundle for <code>{modelType} / {modelId || '…'}</code>
+              {idsForType.length > 0 && (
+                <> — available for {modelType}: {idsForType.map((m) => m.model_id).join(', ')}</>
+              )}
+              {idsForType.length === 0 && <> — train one in the Train model tab</>}
+            </>
+          ) : (
+            <>Checking for trained bundles…</>
+          )}
+          <button
+            className="icon-btn refresh"
+            title="Re-check available bundles"
+            onClick={refreshModels}
+          >
+            ⟳
+          </button>
+        </div>
         <div className="hint">
           cyclical expects <code>timestamp, signal_value, machine_id</code>;
           non_cyclical expects the channel columns the bundle was trained on;
@@ -98,7 +158,12 @@ export default function AnomalyTab() {
           if the bundle was trained with one). The raw acoustic recordings have
           5 metadata rows — set skip to 5 for those.
         </div>
-        <button className="run-btn" onClick={handleScore} disabled={loading}>
+        <button
+          className="run-btn"
+          onClick={handleScore}
+          disabled={loading || (models != null && !bundle)}
+          title={models != null && !bundle ? 'No trained bundle for this selection' : undefined}
+        >
           {loading ? 'Scoring…' : 'Score anomalies'}
         </button>
       </section>

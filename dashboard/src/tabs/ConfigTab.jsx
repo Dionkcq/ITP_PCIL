@@ -1,5 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
+  createConfigRecipe,
+  deleteConfigRecipe,
   listConfigs,
   loadConfigRecipe,
   saveConfigRecipe,
@@ -66,9 +68,20 @@ export default function ConfigTab() {
   const [recipe, setRecipe] = useState('')
   const [form, setForm] = useState(null)
   const [saveAs, setSaveAs] = useState('')
+  const [newMachine, setNewMachine] = useState('')
+  const [newRecipeName, setNewRecipeName] = useState('config')
   const [busy, setBusy] = useState(false)
   // banner: { kind: 'ok' | 'error' | 'warn', title, items }
   const [banner, setBanner] = useState(null)
+  const bannerRef = useRef(null)
+
+  // The banner is the tab's ONLY feedback channel — make sure the user
+  // actually sees it whenever it changes.
+  useEffect(() => {
+    if (banner) {
+      bannerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    }
+  }, [banner])
 
   async function refreshList(selectPath) {
     const r = await listConfigs()
@@ -142,6 +155,45 @@ export default function ConfigTab() {
     }
   }
 
+  async function handleCreateMachine() {
+    setBusy(true)
+    setBanner(null)
+    try {
+      const r = await createConfigRecipe({
+        machine: newMachine,
+        name: newRecipeName,
+        config: toConfig(form),
+      })
+      if (r.status === 'invalid') {
+        setBanner({
+          kind: 'error',
+          title: 'Validation failed — machine not created',
+          items: r.errors,
+        })
+        return
+      }
+      setNewMachine('')
+      setNewRecipeName('config')
+      // Refresh + reload FIRST (loadRecipe clears the banner), then set
+      // the confirmation last so it stays on screen.
+      const pick = await refreshList(r.recipe)
+      await loadRecipe(pick)
+      setBanner({
+        kind: 'ok',
+        title: `Created ${r.recipe} — saved to disk`,
+        items: [
+          'The previous form was used as the starting recipe — adjust the ' +
+            'source path and schema for the new machine, then Save.',
+          ...r.warnings,
+        ],
+      })
+    } catch (e) {
+      setBanner({ kind: 'error', title: 'Create failed', items: [e.message] })
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function handleSave(asNew) {
     setBusy(true)
     setBanner(null)
@@ -155,17 +207,49 @@ export default function ConfigTab() {
         setBanner({ kind: 'error', title: 'Validation failed — nothing saved', items: r.errors })
         return
       }
+      setSaveAs('')
+      // Refresh + reload FIRST (loadRecipe clears the banner), then set
+      // the confirmation last so it stays on screen.
+      const pick = await refreshList(r.recipe)
+      await loadRecipe(pick)
       const items = []
       if (r.backup) items.push(`Previous version backed up to ${r.backup}`)
       items.push(...r.warnings)
-      setBanner({ kind: 'ok', title: `Saved ${r.recipe}`, items })
-      setSaveAs('')
-      // Refresh so a save-as recipe appears in this dropdown (and the
-      // Diagnosis tab picks it up on its next mount).
-      const pick = await refreshList(r.recipe)
-      await loadRecipe(pick)
+      setBanner({
+        kind: 'ok',
+        title: `Saved ${r.recipe} — the next pipeline run uses this version`,
+        items,
+      })
     } catch (e) {
       setBanner({ kind: 'error', title: 'Save failed', items: [e.message] })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handleDelete() {
+    const ok = window.confirm(
+      `Delete ${recipe}?\n\nThe file is moved to machines/.../.backups/ ` +
+        'and can be restored from disk — it is not destroyed.',
+    )
+    if (!ok) return
+    setBusy(true)
+    setBanner(null)
+    try {
+      const r = await deleteConfigRecipe(recipe)
+      const pick = await refreshList()
+      if (pick) {
+        await loadRecipe(pick)
+      } else {
+        setForm(null)
+      }
+      setBanner({
+        kind: 'ok',
+        title: `Deleted ${r.deleted}`,
+        items: [`Recoverable at machines/${r.backup}`],
+      })
+    } catch (e) {
+      setBanner({ kind: 'error', title: 'Delete failed', items: [e.message] })
     } finally {
       setBusy(false)
     }
@@ -189,10 +273,16 @@ export default function ConfigTab() {
                 loadRecipe(e.target.value)
               }}
             >
-              {recipes.map((c) => (
-                <option key={c.recipe} value={c.recipe}>
-                  {c.machine} — {c.name}
-                </option>
+              {[...new Set(recipes.map((c) => c.machine))].map((machine) => (
+                <optgroup key={machine} label={machine}>
+                  {recipes
+                    .filter((c) => c.machine === machine)
+                    .map((c) => (
+                      <option key={c.recipe} value={c.recipe}>
+                        {c.name}
+                      </option>
+                    ))}
+                </optgroup>
               ))}
             </select>
           </label>
@@ -203,14 +293,42 @@ export default function ConfigTab() {
           >
             Reload from disk
           </button>
+          <button
+            className="ghost-btn danger"
+            onClick={handleDelete}
+            disabled={busy || !recipe}
+            title="Moves the file to .backups/ — recoverable from disk"
+          >
+            Delete recipe
+          </button>
         </div>
         <div className="hint">
-          Edits are validated server-side before anything is written — an invalid
-          recipe is rejected with the reasons listed, and every overwrite keeps a
-          timestamped backup. The recipe applies to the next pipeline run; no
-          restart needed.
+          One machine can hold several recipes for different purposes (use
+          &quot;Save as new&quot; below). Edits are validated server-side before
+          anything is written — an invalid recipe is rejected with the reasons
+          listed, and every overwrite keeps a timestamped backup. The recipe
+          applies to the next pipeline run; no restart needed.
         </div>
       </section>
+
+      <div ref={bannerRef}>
+        {banner && (
+          <div
+            className={`banner ${
+              banner.kind === 'error' ? 'error' : banner.kind === 'warn' ? 'warn' : 'ok'
+            }`}
+          >
+            <strong>{banner.title}</strong>
+            {banner.items.length > 0 && (
+              <ul className="banner-list">
+                {banner.items.map((m, i) => (
+                  <li key={i}>{m}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+      </div>
 
       {form && (
         <>
@@ -380,11 +498,16 @@ export default function ConfigTab() {
               <button className="run-btn" onClick={() => handleSave(false)} disabled={busy || incomplete}>
                 {busy ? 'Working…' : 'Save recipe'}
               </button>
-              <button className="ghost-btn" onClick={handleValidate} disabled={busy || incomplete}>
+              <button
+                className="ghost-btn"
+                onClick={handleValidate}
+                disabled={busy || incomplete}
+                title="Dry run: checks the form against the same rules as Save, without writing anything"
+              >
                 Validate only
               </button>
               <label className="field grow">
-                <span>Save as new recipe (letters, digits, _ or -)</span>
+                <span>Save as new recipe for this machine (letters, digits, _ or -)</span>
                 <input
                   value={saveAs}
                   placeholder="e.g. config_test_run2"
@@ -405,20 +528,41 @@ export default function ConfigTab() {
               </div>
             )}
           </section>
-        </>
-      )}
 
-      {banner && (
-        <div className={`banner ${banner.kind === 'error' ? 'error' : banner.kind === 'warn' ? 'warn' : 'ok'}`}>
-          <strong>{banner.title}</strong>
-          {banner.items.length > 0 && (
-            <ul className="banner-list">
-              {banner.items.map((m, i) => (
-                <li key={i}>{m}</li>
-              ))}
-            </ul>
-          )}
-        </div>
+          <section className="controls-card col cfg-section">
+            <h3>New machine</h3>
+            <div className="row">
+              <label className="field">
+                <span>Machine folder name</span>
+                <input
+                  value={newMachine}
+                  placeholder="e.g. laser_welder"
+                  onChange={(e) => setNewMachine(e.target.value)}
+                />
+              </label>
+              <label className="field">
+                <span>Recipe filename</span>
+                <input
+                  value={newRecipeName}
+                  onChange={(e) => setNewRecipeName(e.target.value)}
+                />
+              </label>
+              <button
+                className="ghost-btn"
+                onClick={handleCreateMachine}
+                disabled={busy || incomplete || !newMachine.trim()}
+              >
+                Create machine
+              </button>
+            </div>
+            <div className="hint">
+              Creates <code>machines/&lt;name&gt;/&lt;recipe&gt;.yaml</code> using the
+              form above as the starting recipe. The new machine appears in every
+              recipe dropdown immediately — point its source at the right CSV and
+              adjust the schema, then Save. Existing recipes are never overwritten.
+            </div>
+          </section>
+        </>
       )}
     </div>
   )

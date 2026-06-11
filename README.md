@@ -37,11 +37,16 @@ Orchestrator** (`pcil/orchestrator.py`). It exposes endpoints for:
 - Running the full pipeline against a shop-floor slice
   (`/pipeline/run` or `/pipeline/run_csv`).
 - Training and scoring per-machine anomaly models
-  (`/anomaly/train`, `/anomaly/score`).
-- Listing, validating and editing config recipes (`/configs`,
-  `/configs/load`, `/configs/validate`, `/configs/save`) — the dashboard's
-  Config tab is built on these; saves are validated server-side and
-  backed up, so the YAML can't be corrupted from the UI.
+  (`/anomaly/train`, `/anomaly/score`), plus `/anomaly/models` listing
+  the trained bundles in `data/` (drives the dashboard's bundle
+  indicator).
+- Listing, validating, editing, creating and deleting config recipes
+  (`/configs`, `/configs/load`, `/configs/validate`, `/configs/save`,
+  `/configs/create`, `/configs/delete`) — the dashboard's Config tab is
+  built on these; saves are validated server-side and backed up, deletes
+  are recoverable (moved to `.backups/`), so the YAML can't be corrupted
+  or lost from the UI, and new machines can be onboarded without
+  touching the repo.
 
 Anomaly detection is split into three specialist subpackages —
 cyclical (periodic signals like pressure), non_cyclical (continuous

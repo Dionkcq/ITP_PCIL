@@ -443,12 +443,15 @@ def root() -> dict:
             "anomaly": [
                 "POST /anomaly/train",
                 "POST /anomaly/score",
+                "GET /anomaly/models",
             ],
             "config": [
                 "GET /configs",
                 "GET /configs/load",
                 "POST /configs/validate",
                 "POST /configs/save",
+                "POST /configs/create",
+                "POST /configs/delete",
             ],
             "docs": "GET /docs",
             "dashboard": f"GET {DASHBOARD_URL_PATH}/",
@@ -921,6 +924,142 @@ def save_config_recipe(req: SaveConfigRequest) -> dict:
         "backup": backup_name,
         "warnings": warnings,
     }
+
+
+class CreateConfigRequest(BaseModel):
+    machine: str = Field(
+        ...,
+        description="New machine folder name (letters, digits, '_', '-').",
+        examples=["laser_welder"],
+    )
+    name: str = Field(
+        "config",
+        description="Recipe filename without extension (defaults to 'config').",
+    )
+    config: dict = Field(
+        ...,
+        description="The initial recipe — same shape /configs/save validates.",
+    )
+
+
+@app.post("/configs/create", tags=["config"])
+def create_config_recipe(req: CreateConfigRequest) -> dict:
+    """Create a brand-new machine folder + recipe from the dashboard.
+
+    Same validation as /configs/save; refuses to overwrite an existing
+    recipe (use /configs/save for edits). The machine's output/ folder
+    is created automatically on the first pipeline run.
+    """
+    machine = req.machine.strip()
+    name = req.name.strip().removesuffix(".yaml").removesuffix(".yml") or "config"
+    if not _RECIPE_NAME_RE.fullmatch(machine):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "machine must be 1-64 characters: letters, digits, '_' or '-' "
+                "(no slashes, dots or spaces)"
+            ),
+        )
+    if not _RECIPE_NAME_RE.fullmatch(name):
+        raise HTTPException(
+            status_code=400,
+            detail="name must be 1-64 characters: letters, digits, '_' or '-'",
+        )
+
+    cfg = _normalize_recipe(req.config)
+    errors, warnings = _validate_recipe(cfg)
+    if errors:
+        return {"status": "invalid", "errors": errors, "warnings": warnings}
+
+    dest = MACHINES_ROOT / machine / f"{name}.yaml"
+    if dest.is_file():
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"recipe {machine}/{name}.yaml already exists — "
+                "edit it via /configs/save instead"
+            ),
+        )
+
+    payload = {section: cfg[section] for section in _EDITABLE_SECTIONS if section in cfg}
+    header = (
+        "# Created by the PCIL dashboard config editor on "
+        f"{datetime.now(timezone.utc).isoformat(timespec='seconds')}.\n"
+    )
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(
+        header + yaml.safe_dump(payload, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+
+    return {
+        "status": "ok",
+        "recipe": f"{machine}/{name}.yaml",
+        "config_path": f"machines/{machine}/{name}.yaml",
+        "warnings": warnings,
+    }
+
+
+class DeleteConfigRequest(BaseModel):
+    path: str = Field(
+        ...,
+        description="Recipe to delete, e.g. 'inkjet_printer/config.yaml'.",
+    )
+
+
+@app.post("/configs/delete", tags=["config"])
+def delete_config_recipe(req: DeleteConfigRequest) -> dict:
+    """Delete a recipe — recoverably.
+
+    The file is MOVED to machines/<machine>/.backups/<name>.deleted-<stamp>.yaml
+    rather than destroyed, so a wrong click can be undone from disk. A
+    machine whose last recipe is deleted simply disappears from /configs;
+    its folder (with backups and outputs) stays on disk.
+    """
+    p = _safe_recipe_path(req.path)
+    backup_dir = p.parent / ".backups"
+    backup_dir.mkdir(exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    backup_path = backup_dir / f"{p.stem}.deleted-{stamp}.yaml"
+    shutil.move(str(p), str(backup_path))
+    return {
+        "status": "ok",
+        "deleted": f"{p.parent.name}/{p.name}",
+        "backup": f"{p.parent.name}/.backups/{backup_path.name}",
+    }
+
+
+# Bundle filenames follow <model_type>_<model_id>.pkl; model_type itself
+# contains an underscore for non_cyclical, so match the known prefixes.
+_BUNDLE_STEM_RE = re.compile(r"^(non_cyclical|cyclical|irregular)_(.+)$")
+
+
+@app.get("/anomaly/models", tags=["anomaly"])
+def list_anomaly_models() -> dict:
+    """List the trained anomaly bundles available in data/.
+
+    Drives the dashboard's bundle indicator: a model_type + model_id
+    combination is scoreable only when its .pkl appears here. Filename
+    metadata only — bundles are not unpickled (torch bundles are heavy).
+    """
+    models = []
+    data_dir = PROJECT_ROOT / "data"
+    if data_dir.is_dir():
+        for p in sorted(data_dir.glob("*.pkl")):
+            m = _BUNDLE_STEM_RE.match(p.stem)
+            if not m:
+                continue
+            stat = p.stat()
+            models.append({
+                "model_type": m.group(1),
+                "model_id": m.group(2),
+                "file": p.name,
+                "size_kb": round(stat.st_size / 1024, 1),
+                "modified": datetime.fromtimestamp(
+                    stat.st_mtime, tz=timezone.utc
+                ).isoformat(timespec="seconds"),
+            })
+    return {"models": models}
 
 
 def _anomaly_bundle_path(model_type: str, model_id: str) -> Path:

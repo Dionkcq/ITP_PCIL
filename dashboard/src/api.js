@@ -91,7 +91,30 @@ export function saveConfigRecipe({ path, config, saveAs }) {
   }).then(handle)
 }
 
+// Create a brand-new machine folder + recipe. 409 if it already exists.
+export function createConfigRecipe({ machine, name, config }) {
+  return fetch(`${BASE}/configs/create`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ machine, name: name || 'config', config }),
+  }).then(handle)
+}
+
+// Delete a recipe — server moves it into .backups/ (recoverable from disk).
+export function deleteConfigRecipe(path) {
+  return fetch(`${BASE}/configs/delete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  }).then(handle)
+}
+
 // ── Anomaly detection ──────────────────────────────────────────────
+
+// List the trained .pkl bundles in data/ — drives the bundle indicator.
+export function listAnomalyModels() {
+  return fetch(`${BASE}/anomaly/models`).then(handle)
+}
 
 // Score time-series rows. /anomaly/score takes JSON rows (not a file), so the
 // caller parses the CSV client-side first.

@@ -231,3 +231,125 @@ def test_save_as_rejects_bad_names(client, machines_root):
         # the genuinely malformed names must 400.
         if bad:
             assert r.status_code == 400, f"save_as={bad!r} should be rejected"
+
+
+# ── creating a new machine ───────────────────────────────────
+
+
+def test_create_new_machine(client, machines_root):
+    """POST /configs/create makes machines/<machine>/<name>.yaml and the
+    new recipe shows up in GET /configs."""
+    cfg = _load_payload(client)
+    cfg["system"] = "laser_welder"
+
+    r = client.post(
+        "/configs/create",
+        json={"machine": "laser_welder", "name": "config", "config": cfg},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "ok"
+    assert body["recipe"] == "laser_welder/config.yaml"
+    assert body["config_path"] == "machines/laser_welder/config.yaml"
+
+    new_file = machines_root / "laser_welder" / "config.yaml"
+    saved = yaml.safe_load(new_file.read_text(encoding="utf-8"))
+    assert saved["system"] == "laser_welder"
+
+    recipes = [c["recipe"] for c in client.get("/configs").json()["configs"]]
+    assert "laser_welder/config.yaml" in recipes
+
+
+def test_create_refuses_overwrite(client, machines_root):
+    cfg = _load_payload(client)
+    r = client.post(
+        "/configs/create",
+        json={"machine": "inkjet_printer", "name": "config", "config": cfg},
+    )
+    assert r.status_code == 409
+    assert "already exists" in r.json()["detail"]
+
+
+def test_create_rejects_bad_machine_names(client, machines_root):
+    cfg = _load_payload(client)
+    for bad in ("../evil", "a/b", "name with spaces", ".hidden"):
+        r = client.post(
+            "/configs/create",
+            json={"machine": bad, "config": cfg},
+        )
+        assert r.status_code == 400, f"machine={bad!r} should be rejected"
+    assert not (machines_root / "..").joinpath("evil").exists()
+
+
+def test_create_invalid_config_creates_nothing(client, machines_root):
+    cfg = _load_payload(client)
+    cfg["input"]["targets"] = []
+    r = client.post(
+        "/configs/create",
+        json={"machine": "broken_machine", "config": cfg},
+    )
+    assert r.status_code == 200
+    assert r.json()["status"] == "invalid"
+    assert not (machines_root / "broken_machine").exists()
+
+
+# ── deleting recipes ─────────────────────────────────────────
+
+
+def test_delete_recipe_is_recoverable(client, machines_root):
+    """Delete moves the file into .backups/ (recoverable), and the
+    recipe disappears from GET /configs."""
+    r = client.post(
+        "/configs/delete", json={"path": "inkjet_printer/config.yaml"}
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "ok"
+    assert body["deleted"] == "inkjet_printer/config.yaml"
+    assert ".backups/" in body["backup"] and ".deleted-" in body["backup"]
+
+    assert not (machines_root / "inkjet_printer" / "config.yaml").exists()
+    backups = list(
+        (machines_root / "inkjet_printer" / ".backups").glob("config.deleted-*.yaml")
+    )
+    assert len(backups) == 1
+    # The moved file is intact YAML — restoring = moving it back.
+    assert yaml.safe_load(backups[0].read_text(encoding="utf-8"))["input"]
+
+    assert client.get("/configs").json()["configs"] == []
+
+
+def test_delete_missing_and_traversal(client, machines_root):
+    r = client.post("/configs/delete", json={"path": "inkjet_printer/nope.yaml"})
+    assert r.status_code == 404
+    r = client.post("/configs/delete", json={"path": "../pcil/orchestrator.yaml"})
+    assert r.status_code == 400
+
+
+# ── anomaly bundle listing ───────────────────────────────────
+
+
+def test_list_anomaly_models(client, isolated_data_dir):
+    """GET /anomaly/models parses <model_type>_<model_id>.pkl filenames,
+    including the underscore-bearing non_cyclical prefix, and ignores
+    anything that isn't a recognised bundle."""
+    for name in (
+        "cyclical_inkjet_01.pkl",
+        "non_cyclical_inkjet_01.pkl",
+        "irregular_conveyor_a_b.pkl",
+        "random.pkl",          # no recognised prefix
+        "notes.txt",           # not a .pkl
+    ):
+        (isolated_data_dir / name).write_bytes(b"x")
+
+    r = client.get("/anomaly/models")
+    assert r.status_code == 200
+    models = {(m["model_type"], m["model_id"]) for m in r.json()["models"]}
+    assert models == {
+        ("cyclical", "inkjet_01"),
+        ("non_cyclical", "inkjet_01"),
+        ("irregular", "conveyor_a_b"),
+    }
+    for m in r.json()["models"]:
+        assert m["file"].endswith(".pkl")
+        assert "size_kb" in m and "modified" in m
