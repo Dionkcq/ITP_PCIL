@@ -1,15 +1,25 @@
 import { useState } from 'react'
 
 // ── Header meta ────────────────────────────────────────────────────
+
+// ISO timestamps are precise but noisy in a meta bar — show
+// "2026-05-15 09:00:30" instead of "2026-05-15T09:00:30+00:00".
+function shortTime(iso) {
+  if (typeof iso !== 'string') return iso
+  return iso.replace('T', ' ').replace(/(\+00:00|Z)$/, '')
+}
+
 export function MetaBar({ data }) {
   const system = data.impacts?.system ?? 'unknown'
   const cw = data.impacts?.context_window ?? {}
-  const from = cw.time_from ?? cw.start ?? '—'
-  const to = cw.time_to ?? cw.end ?? '—'
+  // The Week-3 impacts schema names these start_time / end_time; the
+  // older spellings are kept as fallbacks for archived responses.
+  const from = cw.start_time ?? cw.time_from ?? cw.start ?? '—'
+  const to = cw.end_time ?? cw.time_to ?? cw.end ?? '—'
   return (
     <div className="meta">
       <span><strong>System</strong> {system}</span>
-      <span><strong>Window</strong> {from} &rarr; {to}</span>
+      <span><strong>Window</strong> {shortTime(from)} &rarr; {shortTime(to)}</span>
       <span><strong>Rows</strong> {data.input_rows}</span>
     </div>
   )
