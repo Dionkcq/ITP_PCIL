@@ -1,0 +1,225 @@
+# PCIL Job Orchestrator — Deployment & Testing Guide
+
+How to run the PCIL solution as a Docker container and call its API.
+Written for the SIMTech test environment; everything runs from one
+container via `docker-compose.yml`.
+
+The container serves two things on **port 8000**:
+
+- the **REST API** (FastAPI) — the programmatic way to trigger the solution
+- the **operator dashboard** (browser UI) at `/dashboard/` — the point-and-click way
+
+---
+
+## 1. What you need
+
+| Item | Notes |
+|---|---|
+| Docker with Compose v2 | `docker compose version` should print v2.x |
+| This repository (or just `docker-compose.yml`) | https://github.com/Dionkcq/ITP_PCIL |
+| The `data/` folder | Provided separately by the team — **not** in git. Contains the trained model bundles, sample shop-floor CSV, and RAG recovery documents. |
+| `GEMINI_API_KEY` (optional) | Needed for live LLM-written recommendations. Without it (or without outbound internet) everything still works, but `operator_recommendation` is a fixed fallback string instead of generated text. |
+
+Expected layout before starting:
+
+```
+<deploy folder>/
+├── docker-compose.yml
+├── .env                     # optional — see step 3
+└── data/                    # provided by the team
+    ├── mock_shop_floor.csv          # sample shop-floor slice (config.yaml points here)
+    ├── cyclical_inkjet_01.pkl       # trained cyclical anomaly bundle
+    ├── non_cyclical_inkjet_01.pkl   # trained non-cyclical anomaly bundle
+    └── RAG/                         # recovery-knowledge DOCX documents
+        └── *.docx
+```
+
+If the `data/` folder lives somewhere else, set `PCIL_DATA_DIR=<path>` in
+`.env` instead of moving it.
+
+## 2. Get the image
+
+Pick whichever fits the test environment:
+
+**A. Pull the prebuilt image** (needs internet):
+
+```bash
+docker compose pull
+```
+
+**B. Build from source** (needs internet + a full repo checkout — the
+build compiles the dashboard with Node and installs the Python stack):
+
+```bash
+docker compose build
+```
+
+**C. Load from a tarball** (offline environments — ask the team for
+`pcil_image.tar`):
+
+```bash
+docker load -i pcil_image.tar
+```
+
+## 3. Configure (optional)
+
+Create a file named `.env` next to `docker-compose.yml`:
+
+```bash
+GEMINI_API_KEY=your_real_key_here
+# PCIL_PORT=8000          # change if 8000 is taken on the host
+# PCIL_DATA_DIR=./data    # change if data/ lives elsewhere
+```
+
+Skipping this step is fine — the service boots without it and degrades
+gracefully (see section 7).
+
+## 4. Start and verify
+
+```bash
+docker compose up -d
+docker compose ps          # state should be "running (healthy)" after ~20 s
+curl http://localhost:8000/
+```
+
+`GET /` returns service metadata including an endpoint index. Then open
+in a browser (replace `localhost` with the host's IP when testing from
+another machine on the LAN):
+
+- `http://localhost:8000/dashboard/` — operator dashboard
+- `http://localhost:8000/docs` — interactive Swagger UI (try any endpoint from the browser)
+
+Logs and shutdown:
+
+```bash
+docker compose logs -f     # follow the orchestrator logs
+docker compose down        # stop and remove the container
+```
+
+## 5. Triggering the solution
+
+There is no cron or watcher inside the container — **the trigger IS the
+API call**. Whatever system decides "diagnose now" (a test script, an
+ingestion job, a human) sends one HTTP request and gets the full
+diagnosis back in the response.
+
+### 5a. Run the pipeline on the configured source
+
+Uses the slice recipe baked into `machines/inkjet_printer/config.yaml`
+(which points at `data/mock_shop_floor.csv` inside the mounted data
+folder):
+
+```bash
+curl -X POST http://localhost:8000/pipeline/run \
+     -H "Content-Type: application/json" \
+     -d '{"config_path": "machines/inkjet_printer/config.yaml", "persist": false}'
+```
+
+### 5b. Run the pipeline on an uploaded CSV
+
+Same pipeline, but the shop-floor slice arrives as a file upload — no
+config editing needed. The CSV must match the schema in `config.yaml`'s
+`input` block (timestamp column, numerical/categorical features,
+targets):
+
+```bash
+curl -X POST http://localhost:8000/pipeline/run_csv \
+     -F "config_path=machines/inkjet_printer/config.yaml" \
+     -F "persist=false" \
+     -F "file=@shop_floor_slice.csv"
+```
+
+### Response shape (both variants)
+
+```json
+{
+  "status": "ok",
+  "input_rows": 625,
+  "golden_rows": 625,
+  "impacts": { "...": "ranked feature impacts per target (Week-3 JSON schema)" },
+  "target_summary": { "availability": 1.0, "performance": 0.957, "quality": 0.985, "oee": 0.943 },
+  "recovery_records": [ { "error": "...", "cause": "...", "recovery": "...", "source_doc": "..." } ],
+  "operator_recommendation": "LLM-composed paragraph for the operator",
+  "artifacts": {}
+}
+```
+
+- `impacts` — which input features drove each target up or down in this
+  context window, ranked, with raw + standardized scores.
+- `recovery_records` — top-3 matching entries retrieved from the DOCX
+  recovery documents (local TF-IDF retrieval, no internet needed).
+- `operator_recommendation` — Gemini-composed plain-language guidance;
+  falls back to a fixed string when no key/internet is available.
+
+The same flow is available point-and-click in the dashboard's
+**Diagnosis** tab (configured source or CSV upload).
+
+## 6. API reference
+
+Base URL: `http://<host>:8000`
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/` | Service metadata + endpoint index (use as health check) |
+| POST | `/pipeline/run` | Full pipeline on the slice configured in `config.yaml` |
+| POST | `/pipeline/run_csv` | Full pipeline on an uploaded shop-floor CSV (multipart) |
+| POST | `/pipeline/save_csv` | Write the configured slice to disk as `context_window_<start>_<end>.csv` |
+| POST | `/anomaly/train` | Train an anomaly model from uploaded CSV(s); saves a `.pkl` bundle into `data/` |
+| POST | `/anomaly/score` | Score time-series rows against a trained bundle |
+| GET | `/docs` | Swagger UI — interactive docs for every endpoint above |
+| GET | `/dashboard/` | Operator dashboard (Diagnosis / Anomaly check / Train tabs) |
+
+### Anomaly scoring example
+
+`model_type` is one of `cyclical`, `non_cyclical`, `irregular`; a
+matching bundle `data/<model_type>_<model_id>.pkl` must exist (the
+provided `data/` folder ships `cyclical_inkjet_01` and
+`non_cyclical_inkjet_01`):
+
+```bash
+curl -X POST http://localhost:8000/anomaly/score \
+     -H "Content-Type: application/json" \
+     -d '{
+       "model_type": "cyclical",
+       "model_id": "inkjet_01",
+       "data": [
+         {"timestamp": "2026-06-15T09:00:00.000", "machine_id": "inkjet_01", "signal_value": 0.42},
+         {"timestamp": "2026-06-15T09:00:00.001", "machine_id": "inkjet_01", "signal_value": 0.45}
+       ]
+     }'
+```
+
+Cyclical and irregular responses include per-cycle/window
+`anomaly_scores` plus `is_anomaly` flags computed against the
+`threshold` stored at train time. Non-cyclical scores are class
+probabilities from a supervised Random Forest — threshold directly
+(e.g. at 0.5). The API never writes to the shop-floor database; the
+caller decides which DB row a score belongs to.
+
+Training examples for all three model types are in the repo
+`README.md` ("Factory test API endpoints") and runnable interactively
+from `/docs`.
+
+## 7. Degraded modes (by design)
+
+| Situation | Behaviour |
+|---|---|
+| No `GEMINI_API_KEY` or no outbound internet | Pipeline still returns impacts + recovery records; `operator_recommendation` is a fallback string. LLM calls time out after 30 s. |
+| `data/RAG/` missing | `recovery_records` comes back empty; rest of the response unaffected. |
+| Requested `.pkl` bundle missing | `/anomaly/score` returns 404 listing the paths it tried. |
+| Empty/short input data | Scoring returns zero cycles/windows rather than erroring. |
+
+## 8. Troubleshooting
+
+| Symptom | Likely cause / fix |
+|---|---|
+| `trigger.source not found: ...` from `/pipeline/run` | `data/` folder not mounted or missing `mock_shop_floor.csv`. Check `PCIL_DATA_DIR` and `docker compose config` to see the resolved mount. |
+| `/dashboard/` returns 404 | Image was built without the dashboard stage — rebuild with `docker compose build` (the provided image includes it). |
+| Port already in use | Set `PCIL_PORT=<other>` in `.env`, rerun `docker compose up -d`. |
+| Container unhealthy | `docker compose logs pcil` — the orchestrator prints the failing stage. |
+| Can't reach API from another machine | Use the Docker host's LAN IP, and check the host firewall allows inbound on the chosen port. |
+
+---
+
+Maintainer notes (image publishing, dev setup, tests) live in
+`README.md`. Contact: Dion Ko (ITP Team 21).

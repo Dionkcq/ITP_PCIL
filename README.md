@@ -7,6 +7,11 @@ machine is an inkjet printer at A*STAR SIMTech.
 ITP project · Dion Ko (2401112), Zi Hin, Robin, Daniel, Jaymon ·
 Supervisor: Winardi.
 
+> **Deploying or testing the solution?** Start with
+> [`DEPLOYMENT.md`](DEPLOYMENT.md) — docker-compose setup, how to
+> trigger the pipeline, and the full API URL reference. This README is
+> the developer-facing documentation.
+
 ---
 
 ## What it does
@@ -95,8 +100,9 @@ Copy-Item .env.example .env
 # https://aistudio.google.com/apikey
 ```
 
-`.env` is gitignored. The committed template `.env.example` lists the
-four variables the project reads:
+`.env` is gitignored. The committed template `.env.example` documents
+every variable the project reads (plus the docker-compose knobs
+`PCIL_IMAGE` / `PCIL_PORT` / `PCIL_DATA_DIR`):
 
 | Variable | Read by | Required? |
 |---|---|---|
@@ -249,6 +255,8 @@ placeholder, same `operator_recommendation` placeholder.
 ```
 PCIL_dev/
 ├── Dockerfile                       # python:3.13-slim image for NUC deployment
+├── docker-compose.yml               # one-command deployment (see DEPLOYMENT.md)
+├── DEPLOYMENT.md                    # tester-facing guide: compose + API reference
 ├── requirements.txt                 # pinned floors for Python deps
 ├── pcil/                            # the package
 │   ├── orchestrator.py              # FastAPI app + endpoints
@@ -368,17 +376,33 @@ python tests/fixtures/_generate.py
 
 ---
 
-## Docker deployment (NUC)
+## Docker deployment
+
+The supported deployment path is **docker-compose** — one service that
+serves both the API and the dashboard on port 8000. The step-by-step
+guide for testers (data folder layout, .env, verification, API
+reference) is [`DEPLOYMENT.md`](DEPLOYMENT.md); the short version:
 
 ```powershell
-docker build -t pcil-orchestrator .
-docker run --rm -p 8000:8000 `
-    --env-file .env `
-    -v "$(pwd)/../data:/app/data" `
-    pcil-orchestrator
+# from this directory (PCIL_dev/ has PCIL_DATA_DIR=../data in its .env;
+# a standalone deploy uses ./data next to docker-compose.yml)
+docker compose build      # or: docker compose pull  (prebuilt image)
+docker compose up -d
 # then visit:
 #   http://localhost:8000/dashboard/   operator dashboard (single page UI)
 #   http://localhost:8000/docs         Swagger UI
+docker compose logs -f    # follow logs
+docker compose down       # stop
+```
+
+Plain `docker` still works if compose is unavailable:
+
+```powershell
+docker build -t pcil:latest .
+docker run --rm -p 8000:8000 `
+    -e GEMINI_API_KEY=$env:GEMINI_API_KEY `
+    -v "$(pwd)/../data:/app/data" `
+    pcil:latest
 ```
 
 The Dockerfile is a two-stage build: a `node:20-slim` stage runs
@@ -390,15 +414,41 @@ any operator on the NUC's LAN) just opens
 `http://<nuc-ip>:8000/dashboard/` in a browser. No Node, npm, or Vite
 process is required at runtime.
 
-The container expects two things mounted in at runtime:
+The container expects two things at runtime:
 
-- **`/app/data` from the host's `data/` folder** — anomaly bundles
-  (`<model_type>_<model_id>.pkl`), the mock shop-floor CSV, and the RAG
-  document directory `data/RAG/*.docx`.
-- **`.env` passed via `--env-file`** — at minimum `GEMINI_API_KEY` so
-  the LLM composer can call Gemini. Without the env file the
+- **`/app/data` mounted from the host's `data/` folder** — anomaly
+  bundles (`<model_type>_<model_id>.pkl`), the mock shop-floor CSV, and
+  the RAG document directory `data/RAG/*.docx`. Compose mounts
+  `PCIL_DATA_DIR` (default `./data`) there.
+- **`GEMINI_API_KEY` in the environment** so the LLM composer can call
+  Gemini. Compose forwards it from the `.env` file next to
+  `docker-compose.yml` — and deliberately forwards ONLY that variable,
+  because a stray `PCIL_PROJECT_ROOT` from a dev `.env` would override
+  the image's `/app` and break every data path. Without the key the
   orchestrator still boots and `/pipeline/run` still returns impacts
   JSON, but `operator_recommendation` will be a fallback string.
+
+### Publishing the image (maintainer)
+
+Winardi's test environment pulls `ghcr.io/dionkcq/itp_pcil:latest`
+(the default `image:` in `docker-compose.yml`). To publish a new
+build from this directory:
+
+```powershell
+docker build -t ghcr.io/dionkcq/itp_pcil:latest .
+docker login ghcr.io -u Dionkcq      # password = GitHub PAT with write:packages
+docker push ghcr.io/dionkcq/itp_pcil:latest
+# first push only: github.com -> profile -> Packages -> itp_pcil ->
+# Package settings -> Change visibility -> Public (so the test
+# environment can pull without credentials)
+```
+
+For an offline test environment, ship a tarball instead:
+
+```powershell
+docker save -o pcil_image.tar ghcr.io/dionkcq/itp_pcil:latest
+# on the target machine: docker load -i pcil_image.tar
+```
 
 ---
 

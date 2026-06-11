@@ -31,6 +31,16 @@ def score(df: pd.DataFrame, bundle: dict) -> pd.DataFrame:
         features["window_start_idx"] = start
         rows.append(features)
 
+    if not rows:
+        # Input shorter than one window (window_size_rows) -> no windows.
+        # Return an empty result with the expected columns so callers see
+        # "0 windows scored", not an error. (Checked before stack_features,
+        # which raises ValueError on an empty list.)
+        return pd.DataFrame(
+            columns=[*feature_columns, machine_id_column,
+                     "window_start_idx", "anomaly_score"]
+        )
+
     feature_df      = stack_features(rows)
     feature_df_norm = normaliser.transform(feature_df, machine_id_column=machine_id_column)
     X               = feature_df_norm[feature_columns].to_numpy(dtype=float)

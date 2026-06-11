@@ -89,7 +89,17 @@ def score(df: pd.DataFrame, bundle: dict) -> pd.DataFrame:
             features["cycle_start_timestamp"] = group.iloc[start][timestamp_column]
             rows.append(features)
 
-    feature_df      = stack_features(rows)
+    feature_df = stack_features(rows)
+
+    if feature_df.empty:
+        # No complete cycle detected — input shorter than one ~200-row
+        # cycle, or no clear peaks. Return an empty result with the
+        # expected columns so callers see "0 cycles scored", not an error.
+        return pd.DataFrame(
+            columns=[*feature_columns, machine_id_column,
+                     "cycle_start_timestamp", "anomaly_score", "is_anomaly"]
+        )
+
     feature_df_norm = normaliser.transform(feature_df, machine_id_column=machine_id_column)
     X               = feature_df_norm[feature_columns].to_numpy(dtype=float)
     scores          = model.score(X)

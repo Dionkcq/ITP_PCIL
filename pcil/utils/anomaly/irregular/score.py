@@ -35,8 +35,8 @@ def score(df: pd.DataFrame, bundle: dict) -> pd.DataFrame:
     extracted features plus `window_start_timestamp`, `anomaly_score`
     and `is_anomaly` columns.
 
-    Raises ValueError when the input produces no windows (empty input),
-    which the orchestrator surfaces as HTTP 400.
+    When the input produces no windows, returns an empty DataFrame with
+    the expected columns so callers see "0 windows scored", not an error.
     """
     machine_id_column = bundle["machine_id_column"]
     timestamp_column  = bundle["timestamp_column"]
@@ -65,7 +65,17 @@ def score(df: pd.DataFrame, bundle: dict) -> pd.DataFrame:
             features["window_start_timestamp"] = w_start
             rows.append(features)
 
-    feature_df      = stack_features(rows)
+    feature_df = stack_features(rows)
+
+    if feature_df.empty:
+        # Defensive: detect_windows keeps empty windows, so any non-empty
+        # input yields at least one window — but keep the same graceful
+        # empty-result contract as the cyclical/non_cyclical scorers.
+        return pd.DataFrame(
+            columns=[*feature_columns, machine_id_column,
+                     "window_start_timestamp", "anomaly_score", "is_anomaly"]
+        )
+
     feature_df_norm = normaliser.transform(feature_df, machine_id_column=machine_id_column)
     X               = feature_df_norm[feature_columns].to_numpy(dtype=float)
     scores          = model.score(X)

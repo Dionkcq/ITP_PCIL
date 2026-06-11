@@ -1,0 +1,43 @@
+# PCIL Job Orchestrator — docker-compose deployment
+# ---------------------------------------------------
+# Quick start (full guide in DEPLOYMENT.md):
+#   1. Put the provided data/ folder next to this file (or set PCIL_DATA_DIR
+#      in a .env file next to this one).
+#   2. Optional: add GEMINI_API_KEY=<key> to that same .env for live LLM
+#      recommendations.
+#   3. docker compose pull   (or: docker compose build, from a repo checkout)
+#   4. docker compose up -d
+#   5. Open http://localhost:8000/dashboard/  (API docs at /docs)
+#
+# Variables (all optional, read from .env next to this file):
+#   PCIL_IMAGE     image to run     (default ghcr.io/dionkcq/itp_pcil:latest)
+#   PCIL_PORT      host port        (default 8000)
+#   PCIL_DATA_DIR  host data folder (default ./data)
+#   GEMINI_API_KEY Gemini key       (default empty -> fallback recommendation)
+
+services:
+  pcil:
+    # Prefer pulling the prebuilt image; `docker compose build` rebuilds it
+    # from this repo instead (multi-stage build, needs internet for npm+pip).
+    image: ${PCIL_IMAGE:-ghcr.io/dionkcq/itp_pcil:latest}
+    build: .
+    container_name: pcil-orchestrator
+    ports:
+      - "${PCIL_PORT:-8000}:8000"
+    environment:
+      # Only the Gemini key is forwarded into the container. Deliberately NOT
+      # env_file: a full .env could carry PCIL_PROJECT_ROOT, which must stay
+      # at the image's baked-in /app inside the container.
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+    volumes:
+      # Runtime data the image does NOT contain (shipped separately, not in
+      # git): mock_shop_floor.csv, <model_type>_<model_id>.pkl bundles,
+      # RAG/*.docx recovery documents.
+      - ${PCIL_DATA_DIR:-./data}:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
