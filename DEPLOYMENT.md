@@ -26,6 +26,9 @@ Expected layout before starting:
 <deploy folder>/
 ├── docker-compose.yml
 ├── .env                     # optional — see step 3
+├── machines/                # config recipes (in the repo; or provided with data/)
+│   └── inkjet_printer/
+│       └── config.yaml              # the pipeline "recipe" — editable, see section 7
 └── data/                    # provided by the team
     ├── mock_shop_floor.csv          # sample shop-floor slice (config.yaml points here)
     ├── cyclical_inkjet_01.pkl       # trained cyclical anomaly bundle
@@ -34,8 +37,9 @@ Expected layout before starting:
         └── *.docx
 ```
 
-If the `data/` folder lives somewhere else, set `PCIL_DATA_DIR=<path>` in
-`.env` instead of moving it.
+A repo clone already contains `machines/`; only `data/` has to be added.
+If either folder lives somewhere else, set `PCIL_DATA_DIR=<path>` /
+`PCIL_MACHINES_DIR=<path>` in `.env` instead of moving it.
 
 ## 2. Get the image
 
@@ -166,8 +170,12 @@ Base URL: `http://<host>:8000`
 | POST | `/pipeline/save_csv` | Write the configured slice to disk as `context_window_<start>_<end>.csv` |
 | POST | `/anomaly/train` | Train an anomaly model from uploaded CSV(s); saves a `.pkl` bundle into `data/` |
 | POST | `/anomaly/score` | Score time-series rows against a trained bundle |
+| GET | `/configs` | List the available config recipes |
+| GET | `/configs/load` | Load a recipe as structured data |
+| POST | `/configs/validate` | Dry-run validation of an edited recipe (nothing written) |
+| POST | `/configs/save` | Validate + save a recipe (timestamped backup kept on overwrite) |
 | GET | `/docs` | Swagger UI — interactive docs for every endpoint above |
-| GET | `/dashboard/` | Operator dashboard (Diagnosis / Anomaly check / Train tabs) |
+| GET | `/dashboard/` | Operator dashboard (Diagnosis / Anomaly check / Train / Config recipes tabs) |
 
 ### Anomaly scoring example
 
@@ -200,7 +208,32 @@ Training examples for all three model types are in the repo
 `README.md` ("Factory test API endpoints") and runnable interactively
 from `/docs`.
 
-## 7. Degraded modes (by design)
+## 7. Changing the pipeline recipe (e.g. a new sensor column)
+
+`machines/inkjet_printer/config.yaml` is the pipeline's recipe: where the
+shop-floor slice comes from, how to slice it (all rows / time range /
+last N), which columns are features and targets. Because the folder is
+mounted from the host, **recipe changes need no image rebuild and no
+container restart** — the next API call uses the saved version.
+
+Two ways to change it:
+
+- **Dashboard (recommended):** the **Config recipes** tab edits the recipe
+  as a form — add/remove feature columns with descriptions, change targets
+  or the slice mode. Every save is validated server-side first (an invalid
+  recipe is rejected with the reasons listed, the file is never corrupted)
+  and the previous version is backed up to `machines/<machine>/.backups/`.
+  "Save as new" creates a separate recipe (e.g. `config_test2.yaml`) that
+  becomes selectable in the Diagnosis tab without touching the original.
+- **Text editor:** edit the YAML on the host directly. The same validation
+  runs when the recipe is used, but there is no backup — the dashboard
+  path is safer.
+
+Note: the testing CSV (uploaded or configured) must contain the columns
+the recipe names. If a pipeline run reports a missing column, the recipe
+and the data disagree — fix whichever is wrong.
+
+## 8. Degraded modes (by design)
 
 | Situation | Behaviour |
 |---|---|
@@ -209,7 +242,7 @@ from `/docs`.
 | Requested `.pkl` bundle missing | `/anomaly/score` returns 404 listing the paths it tried. |
 | Empty/short input data | Scoring returns zero cycles/windows rather than erroring. |
 
-## 8. Troubleshooting
+## 9. Troubleshooting
 
 | Symptom | Likely cause / fix |
 |---|---|

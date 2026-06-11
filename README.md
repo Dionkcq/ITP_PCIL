@@ -38,6 +38,10 @@ Orchestrator** (`pcil/orchestrator.py`). It exposes endpoints for:
   (`/pipeline/run` or `/pipeline/run_csv`).
 - Training and scoring per-machine anomaly models
   (`/anomaly/train`, `/anomaly/score`).
+- Listing, validating and editing config recipes (`/configs`,
+  `/configs/load`, `/configs/validate`, `/configs/save`) — the dashboard's
+  Config tab is built on these; saves are validated server-side and
+  backed up, so the YAML can't be corrupted from the UI.
 
 Anomaly detection is split into three specialist subpackages —
 cyclical (periodic signals like pressure), non_cyclical (continuous
@@ -301,6 +305,7 @@ PCIL_dev/
     ├── test_anomaly_score.py
     ├── test_anomaly_train.py
     ├── test_anomaly_irregular.py
+    ├── test_configs.py
     ├── test_rag_lookup.py
     ├── test_rag_loader.py
     └── test_dashboard.py
@@ -466,3 +471,4 @@ docker save -o pcil_image.tar ghcr.io/dionkcq/itp_pcil:latest
 | LLM composer | working — Gemini (`gemini-2.5-flash` via `google-genai`, 30 s timeout), records survive composer failures |
 | `rag_frontend/` (optional Flask demo UI) | working — proxy-only client, not in the Docker image |
 | Operator dashboard | working — React + Vite client, served by the orchestrator at `/dashboard/` and bundled into the Docker image via multi-stage build |
+| Config recipe editor | working — dashboard Config tab + `/configs*` endpoints; form-based editing, server-side validation, timestamped backups, save-as-new-recipe |

@@ -60,6 +60,37 @@ export function saveCsv(configPath) {
   }).then(handle)
 }
 
+// ── Config recipes (Config tab editor) ─────────────────────────────
+
+// List the recipes under machines/.
+export function listConfigs() {
+  return fetch(`${BASE}/configs`).then(handle)
+}
+
+// Load one recipe as structured data (never raw YAML).
+export function loadConfigRecipe(path) {
+  return fetch(`${BASE}/configs/load?path=${encodeURIComponent(path)}`).then(handle)
+}
+
+// Dry-run validation: same checks as save, nothing written.
+export function validateConfigRecipe({ path, config }) {
+  return fetch(`${BASE}/configs/validate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path, config }),
+  }).then(handle)
+}
+
+// Validate + persist. Responds {status:'ok'|'invalid', errors, warnings};
+// 'invalid' means nothing was written. Overwrites store a backup server-side.
+export function saveConfigRecipe({ path, config, saveAs }) {
+  return fetch(`${BASE}/configs/save`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path, config, save_as: saveAs || null }),
+  }).then(handle)
+}
+
 // ── Anomaly detection ──────────────────────────────────────────────
 
 // Score time-series rows. /anomaly/score takes JSON rows (not a file), so the

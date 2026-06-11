@@ -34,6 +34,12 @@ services:
       # git): mock_shop_floor.csv, <model_type>_<model_id>.pkl bundles,
       # RAG/*.docx recovery documents.
       - ${PCIL_DATA_DIR:-./data}:/app/data
+      # Config recipes, mounted so edits made in the dashboard's Config tab
+      # (or with a text editor on the host) persist across container
+      # restarts and apply on the next API call — no rebuild needed. The
+      # image carries a baked-in copy as fallback, but mounting is the
+      # supported deployment path.
+      - ${PCIL_MACHINES_DIR:-./machines}:/app/machines
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/', timeout=5)"]

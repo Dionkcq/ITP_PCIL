@@ -3,11 +3,13 @@ import { ORCHESTRATOR_URL, ping } from './api.js'
 import DiagnosisTab from './tabs/DiagnosisTab.jsx'
 import AnomalyTab from './tabs/AnomalyTab.jsx'
 import TrainTab from './tabs/TrainTab.jsx'
+import ConfigTab from './tabs/ConfigTab.jsx'
 
 const TABS = [
   { id: 'diagnosis', label: 'Diagnosis' },
   { id: 'anomaly', label: 'Anomaly check' },
   { id: 'train', label: 'Train model' },
+  { id: 'config', label: 'Config recipes' },
 ]
 
 export default function App() {
@@ -69,6 +71,9 @@ export default function App() {
       </div>
       <div style={{ display: tab === 'train' ? 'block' : 'none' }}>
         <TrainTab />
+      </div>
+      <div style={{ display: tab === 'config' ? 'block' : 'none' }}>
+        <ConfigTab />
       </div>
     </div>
   )

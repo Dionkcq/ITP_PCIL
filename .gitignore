@@ -39,6 +39,9 @@ pcil/rag/data/
 # not deliverables themselves — the deliverable is the API).
 machines/*/output/context_window_*.csv
 
+# Timestamped pre-save backups written by the dashboard config editor.
+machines/*/.backups/
+
 # Triggered slice CSVs (orchestrator dev artifact).
 triggered_slices/
 

@@ -1,14 +1,32 @@
-import { useState } from 'react'
-import { runDiagnosis, runDiagnosisUpload, saveCsv } from '../api.js'
+import { useEffect, useState } from 'react'
+import { listConfigs, runDiagnosis, runDiagnosisUpload, saveCsv } from '../api.js'
 import { DiagnosisResult } from '../components.jsx'
 
-// Add more recipes here as other machines get configs.
+// Fallback while /configs hasn't answered (or on older orchestrators).
 const CONFIGS = [
   { label: 'Inkjet Printer', value: 'machines/inkjet_printer/config.yaml' },
 ]
 
 export default function DiagnosisTab() {
+  const [configs, setConfigs] = useState(CONFIGS)
   const [config, setConfig] = useState(CONFIGS[0].value)
+
+  // Recipes created in the Config tab (save-as) should be selectable
+  // here, so the list comes from the API instead of being hardcoded.
+  useEffect(() => {
+    listConfigs()
+      .then((r) => {
+        if (r.configs?.length) {
+          setConfigs(
+            r.configs.map((c) => ({
+              label: `${c.machine} — ${c.name}`,
+              value: c.config_path,
+            })),
+          )
+        }
+      })
+      .catch(() => {}) // keep the fallback list
+  }, [])
   const [mode, setMode] = useState('configured') // 'configured' | 'upload'
   const [file, setFile] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -92,7 +110,7 @@ export default function DiagnosisTab() {
         <label className="field">
           <span>Machine / recipe</span>
           <select value={config} onChange={(e) => setConfig(e.target.value)}>
-            {CONFIGS.map((c) => (
+            {configs.map((c) => (
               <option key={c.value} value={c.value}>{c.label}</option>
             ))}
           </select>

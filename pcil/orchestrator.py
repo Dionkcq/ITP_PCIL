@@ -36,6 +36,8 @@ from __future__ import annotations
 
 import io
 import os
+import re
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -442,6 +444,12 @@ def root() -> dict:
                 "POST /anomaly/train",
                 "POST /anomaly/score",
             ],
+            "config": [
+                "GET /configs",
+                "GET /configs/load",
+                "POST /configs/validate",
+                "POST /configs/save",
+            ],
             "docs": "GET /docs",
             "dashboard": f"GET {DASHBOARD_URL_PATH}/",
         },
@@ -521,6 +529,397 @@ def save_csv(req: SaveCsvRequest) -> dict:
         "status": "ok",
         "path": str(out_path),
         "rows": int(len(slice_df)),
+    }
+
+
+# ─────────────────────────────────────────────────────────────
+# Config recipe endpoints (dashboard config editor)
+#
+# The dashboard's Config tab edits recipes through these endpoints —
+# never raw YAML. The server parses, validates, and re-serialises with
+# yaml.safe_dump, so a bad submission is rejected with a list of errors
+# instead of ever producing a corrupt file. Every overwrite stores a
+# timestamped backup under machines/<machine>/.backups/.
+# ─────────────────────────────────────────────────────────────
+
+# Root folder of per-machine recipes. CWD-relative to match how
+# config_path strings resolve everywhere else (dev: PCIL_dev/machines,
+# Docker: /app/machines). Mount the folder from the host in deployment
+# (docker-compose does) so dashboard edits survive container recreation.
+MACHINES_ROOT = (Path.cwd() / "machines").resolve()
+
+_RECIPE_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_\-]{0,63}")
+
+# Top-level sections the editor owns. Any other top-level key an
+# engineer added by hand is preserved untouched on save.
+_EDITABLE_SECTIONS = (
+    "system", "pipeline", "trigger", "input", "feature_descriptions",
+)
+
+
+class SaveConfigRequest(BaseModel):
+    path: str = Field(
+        ...,
+        description="Recipe to edit, relative to machines/ — e.g. 'inkjet_printer/config.yaml'.",
+        examples=["inkjet_printer/config.yaml"],
+    )
+    config: dict = Field(
+        ...,
+        description="The full edited recipe (system / pipeline / trigger / input / feature_descriptions).",
+    )
+    save_as: str | None = Field(
+        None,
+        description=(
+            "Optional new recipe name (letters, digits, '_', '-'). Saves "
+            "alongside the original instead of overwriting it."
+        ),
+    )
+
+
+def _safe_recipe_path(recipe: str, *, must_exist: bool = True) -> Path:
+    """Resolve a recipe reference and confine it to MACHINES_ROOT.
+
+    Accepts 'inkjet_printer/config.yaml' or the run-endpoint style
+    'machines/inkjet_printer/config.yaml'. Rejects absolute paths,
+    traversal ('..') and non-YAML suffixes so the editor endpoints can
+    never read or write outside the machines folder.
+    """
+    rel = Path(recipe)
+    if rel.is_absolute():
+        raise HTTPException(
+            status_code=400,
+            detail="config path must be relative to the machines/ folder",
+        )
+    if rel.parts and rel.parts[0] == "machines":
+        rel = Path(*rel.parts[1:])
+    if rel.suffix.lower() not in (".yaml", ".yml"):
+        raise HTTPException(status_code=400, detail="config path must end in .yaml")
+
+    p = (MACHINES_ROOT / rel).resolve()
+    try:
+        p.relative_to(MACHINES_ROOT)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="config path must stay inside the machines/ folder",
+        ) from None
+    if must_exist and not p.is_file():
+        raise HTTPException(status_code=404, detail=f"config not found: {recipe}")
+    return p
+
+
+def _normalize_recipe(cfg: Any) -> Any:
+    """Strip whitespace and coerce obvious types before validation.
+
+    Form submissions arrive as strings ('500' for last_n, padded column
+    names); normalising here keeps the validator's error messages about
+    real problems instead of formatting noise.
+    """
+    if not isinstance(cfg, dict):
+        return cfg
+    out = dict(cfg)
+
+    if isinstance(out.get("system"), str):
+        out["system"] = out["system"].strip()
+
+    pipeline = out.get("pipeline")
+    if isinstance(pipeline, dict):
+        pipeline = dict(pipeline)
+        if isinstance(pipeline.get("output_dir"), str):
+            pipeline["output_dir"] = pipeline["output_dir"].strip()
+        out["pipeline"] = pipeline
+
+    trigger = out.get("trigger")
+    if isinstance(trigger, dict):
+        trigger = dict(trigger)
+        for key in ("source", "mode", "start_time", "end_time"):
+            if isinstance(trigger.get(key), str):
+                trigger[key] = trigger[key].strip() or None
+        if isinstance(trigger.get("mode"), str):
+            trigger["mode"] = trigger["mode"].lower()
+        last_n = trigger.get("last_n")
+        if isinstance(last_n, str) and last_n.strip().isdigit():
+            trigger["last_n"] = int(last_n.strip())
+        out["trigger"] = trigger
+
+    inp = out.get("input")
+    if isinstance(inp, dict):
+        inp = dict(inp)
+        if isinstance(inp.get("timestamp_column"), str):
+            inp["timestamp_column"] = inp["timestamp_column"].strip()
+        for key in ("numerical_features", "categorical_features", "targets"):
+            value = inp.get(key)
+            if isinstance(value, list):
+                inp[key] = [v.strip() if isinstance(v, str) else v for v in value]
+        out["input"] = inp
+
+    descriptions = out.get("feature_descriptions")
+    if isinstance(descriptions, dict):
+        out["feature_descriptions"] = {
+            (k.strip() if isinstance(k, str) else k):
+            (v.strip() if isinstance(v, str) else v)
+            for k, v in descriptions.items()
+        }
+    return out
+
+
+def _validate_recipe(cfg: Any) -> tuple[list[str], list[str]]:
+    """Validate an edited recipe. Returns (errors, warnings).
+
+    Errors block the save; warnings are advisory (returned alongside a
+    successful save). Mirrors what _pull_slice / preprocess actually
+    require at request time, so a recipe that validates here runs.
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+    if not isinstance(cfg, dict):
+        return [f"config payload must be a mapping (got {type(cfg).__name__})"], warnings
+
+    def nonempty_str(v: Any) -> bool:
+        return isinstance(v, str) and bool(v.strip())
+
+    system = cfg.get("system")
+    if system is not None and not nonempty_str(system):
+        errors.append("system must be a non-empty string when provided")
+
+    pipeline = cfg.get("pipeline")
+    if not isinstance(pipeline, dict) or not nonempty_str(pipeline.get("output_dir")):
+        errors.append("pipeline.output_dir is required (non-empty string)")
+
+    trigger = cfg.get("trigger")
+    if not isinstance(trigger, dict):
+        errors.append("trigger section is required")
+    else:
+        if not nonempty_str(trigger.get("source")):
+            errors.append("trigger.source is required (path to the shop-floor CSV)")
+        mode = trigger.get("mode") or "all"
+        if mode not in ("all", "time_range", "last_n"):
+            errors.append(
+                f"trigger.mode must be one of all / time_range / last_n (got {mode!r})"
+            )
+        elif mode == "time_range":
+            bounds = []
+            for label in ("start_time", "end_time"):
+                value = trigger.get(label)
+                if not nonempty_str(value):
+                    errors.append(
+                        f"trigger.{label} is required when mode=time_range (ISO 8601)"
+                    )
+                    bounds.append(None)
+                    continue
+                try:
+                    bounds.append(pd.to_datetime(value, format="ISO8601"))
+                except (ValueError, TypeError):
+                    errors.append(
+                        f"trigger.{label} is not a valid ISO 8601 timestamp: {value!r}"
+                    )
+                    bounds.append(None)
+            if bounds[0] is not None and bounds[1] is not None:
+                try:
+                    if bounds[0] >= bounds[1]:
+                        errors.append("trigger.start_time must be earlier than trigger.end_time")
+                except TypeError:
+                    errors.append(
+                        "trigger.start_time and end_time must both include "
+                        "or both omit a timezone"
+                    )
+        elif mode == "last_n":
+            n = trigger.get("last_n")
+            if isinstance(n, bool) or not isinstance(n, int) or n <= 0:
+                errors.append("trigger.last_n must be a positive integer when mode=last_n")
+
+    numerical: list[str] = []
+    categorical: list[str] = []
+    inp = cfg.get("input")
+    if not isinstance(inp, dict):
+        errors.append("input section is required")
+    else:
+        timestamp = inp.get("timestamp_column")
+        if not nonempty_str(timestamp):
+            errors.append("input.timestamp_column is required (non-empty string)")
+
+        def str_list(key: str, *, required: bool = False) -> list[str]:
+            value = inp.get(key) or []
+            if not isinstance(value, list):
+                errors.append(f"input.{key} must be a list")
+                return []
+            if any(not nonempty_str(v) for v in value):
+                errors.append(f"input.{key} contains empty or non-string entries")
+            valid = [v for v in value if nonempty_str(v)]
+            if required and not valid:
+                errors.append(f"input.{key} must contain at least one column")
+            return valid
+
+        numerical = str_list("numerical_features")
+        categorical = str_list("categorical_features")
+        targets = str_list("targets", required=True)
+        if not numerical and not categorical:
+            errors.append(
+                "at least one feature is required across "
+                "numerical_features + categorical_features"
+            )
+
+        all_columns = (
+            ([timestamp] if nonempty_str(timestamp) else [])
+            + numerical + categorical + targets
+        )
+        seen: set[str] = set()
+        dupes: set[str] = set()
+        for col in all_columns:
+            if col in seen:
+                dupes.add(col)
+            seen.add(col)
+        if dupes:
+            errors.append(
+                "duplicate column(s) across timestamp/features/targets: "
+                + ", ".join(sorted(dupes))
+            )
+
+    descriptions = cfg.get("feature_descriptions")
+    if descriptions is not None and not isinstance(descriptions, dict):
+        errors.append("feature_descriptions must be a mapping of feature -> description")
+    elif isinstance(descriptions, dict):
+        empty = sorted(str(k) for k, v in descriptions.items() if not nonempty_str(v))
+        if empty:
+            errors.append(
+                "feature_descriptions has empty descriptions for: " + ", ".join(empty)
+            )
+        features = set(numerical) | set(categorical)
+        if features:
+            unknown = sorted(set(descriptions) - features)
+            if unknown:
+                warnings.append(
+                    "descriptions refer to features not in the schema: "
+                    + ", ".join(unknown)
+                )
+            missing = sorted(features - set(descriptions))
+            if missing:
+                warnings.append(
+                    "features without a description (the LLM explains better with one): "
+                    + ", ".join(missing)
+                )
+
+    return errors, warnings
+
+
+@app.get("/configs", tags=["config"])
+def list_configs() -> dict:
+    """List the config recipes available under machines/."""
+    configs = []
+    if MACHINES_ROOT.is_dir():
+        for p in sorted(MACHINES_ROOT.glob("*/*.y*ml")):
+            if not p.is_file():
+                continue
+            configs.append({
+                "machine": p.parent.name,
+                "name": p.name,
+                "recipe": f"{p.parent.name}/{p.name}",
+                # The string /pipeline/run and /pipeline/run_csv accept.
+                "config_path": f"machines/{p.parent.name}/{p.name}",
+            })
+    return {"configs": configs}
+
+
+@app.get("/configs/load", tags=["config"])
+def load_config_recipe(path: str) -> dict:
+    """Load a recipe as structured data for the dashboard editor."""
+    p = _safe_recipe_path(path)
+    try:
+        cfg = yaml.safe_load(p.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"invalid YAML in {p.name}: {exc}"
+        ) from exc
+    if not isinstance(cfg, dict):
+        raise HTTPException(
+            status_code=400, detail=f"{p.name} does not contain a YAML mapping"
+        )
+    return {
+        "recipe": f"{p.parent.name}/{p.name}",
+        "config_path": f"machines/{p.parent.name}/{p.name}",
+        "config": cfg,
+    }
+
+
+@app.post("/configs/validate", tags=["config"])
+def validate_config_recipe(req: SaveConfigRequest) -> dict:
+    """Dry-run validation: same checks as /configs/save, nothing written."""
+    _safe_recipe_path(req.path)
+    errors, warnings = _validate_recipe(_normalize_recipe(req.config))
+    return {
+        "status": "ok" if not errors else "invalid",
+        "errors": errors,
+        "warnings": warnings,
+    }
+
+
+@app.post("/configs/save", tags=["config"])
+def save_config_recipe(req: SaveConfigRequest) -> dict:
+    """Validate and persist an edited recipe.
+
+    Returns status='invalid' with the error list when validation fails
+    (nothing is written). On success the YAML is regenerated with
+    yaml.safe_dump — user input is never spliced into the file as text —
+    and the previous version is backed up to machines/<m>/.backups/.
+    """
+    src = _safe_recipe_path(req.path)
+    cfg = _normalize_recipe(req.config)
+    errors, warnings = _validate_recipe(cfg)
+    if errors:
+        return {"status": "invalid", "errors": errors, "warnings": warnings}
+
+    dest = src
+    if req.save_as:
+        name = req.save_as.strip().removesuffix(".yaml").removesuffix(".yml")
+        if not _RECIPE_NAME_RE.fullmatch(name):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "save_as must be 1-64 characters: letters, digits, "
+                    "'_' or '-' (no slashes or dots)"
+                ),
+            )
+        dest = src.parent / f"{name}.yaml"
+
+    # Start from the on-disk YAML so unknown top-level keys an engineer
+    # added by hand survive a dashboard save.
+    base: dict = {}
+    base_src = dest if dest.is_file() else src
+    try:
+        loaded = yaml.safe_load(base_src.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            base = loaded
+    except yaml.YAMLError:
+        base = {}  # corrupt file on disk -> the editor payload becomes the new truth
+    for section in _EDITABLE_SECTIONS:
+        if section in cfg:
+            base[section] = cfg[section]
+
+    backup_name = None
+    if dest.is_file():
+        backup_dir = dest.parent / ".backups"
+        backup_dir.mkdir(exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        backup_path = backup_dir / f"{dest.stem}.{stamp}.yaml"
+        shutil.copy2(dest, backup_path)
+        backup_name = f"{dest.parent.name}/.backups/{backup_path.name}"
+
+    header = (
+        "# Saved by the PCIL dashboard config editor on "
+        f"{datetime.now(timezone.utc).isoformat(timespec='seconds')}.\n"
+        "# Hand-written YAML comments are not preserved by editor saves.\n"
+    )
+    dest.write_text(
+        header + yaml.safe_dump(base, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+
+    return {
+        "status": "ok",
+        "recipe": f"{dest.parent.name}/{dest.name}",
+        "config_path": f"machines/{dest.parent.name}/{dest.name}",
+        "backup": backup_name,
+        "warnings": warnings,
     }
 
 
