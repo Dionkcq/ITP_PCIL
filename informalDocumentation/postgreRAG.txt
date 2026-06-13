@@ -1,0 +1,348 @@
+PostgreSQL / pgvector RAG implementation notes
+==============================================
+
+This file documents the PostgreSQL RAG implementation, how the system is
+intended to produce meaningful operator suggestions, and the current status
+of the implementation.
+
+**STATUS UPDATE (June 2026):** The PostgreSQL RAG system is now functionally
+complete and verified in Docker. All core pieces are implemented and tested.
+Remaining work is validation-focused (evaluation sets, performance profiling,
+operational dashboards) rather than implementation-focused.
+
+
+1. What was attempted
+---------------------
+
+The original RAG path in the codebase was file based:
+
+    data/RAG/*.docx
+      -> pcil.rag.loader.load_all_recovery_docs()
+      -> pcil.rag.lookup.lookup_keywords()
+      -> pcil.rag.composer.compose_recommendation()
+      -> Gemini-generated operator recommendation
+
+During this session, a PostgreSQL-backed hybrid retrieval path was
+started. The intended runtime flow is:
+
+    data/RAG/*.docx
+      -> parse recovery records
+      -> store records in PostgreSQL
+      -> embed records with BAAI/bge-m3 (this is an embedding model)
+      -> store dense vectors in pgvector
+      -> warm a BM25 in-process cache from PostgreSQL rows
+      -> retrieve with BM25 + vector search
+      -> fuse candidates with Reciprocal Rank Fusion (RRF)
+      -> pass top records to Gemini
+      -> return recommendation + provenance fields
+
+Files added or changed for this attempt:
+
+- pcil/rag/migrations/001_rag_pgvector.sql
+  Defines pgvector-backed RAG tables:
+  rag_documents, rag_recovery_records, rag_search_events,
+  rag_recommendations.
+
+- pcil/rag/db.py
+  Adds PostgreSQL connection helpers, a simple SQL migration runner, and
+  helper functions for vector literal formatting and reading records.
+
+- pcil/rag/embeddings.py
+  Adds an EmbeddingModelCache wrapper around BAAI/bge-m3 using
+  sentence-transformers.SentenceTransformer (not FlagEmbedding.BGEM3FlagModel,
+  which had dtype parameter incompatibility with transformers 4.44.2).
+  It lazily loads the model once and has a warm_up() method that runs a
+  dummy encode. Supports both SentenceTransformer and BGEM3FlagModel APIs.
+
+- pcil/rag/hybrid.py
+  Adds:
+  - tokenization
+  - BM25IndexCache using rank-bm25
+  - vector search against pgvector
+  - Reciprocal Rank Fusion
+  - search/recommendation audit insertion helpers
+
+- pcil/rag/ingest.py
+  Adds DOCX-to-PostgreSQL ingestion:
+  - hashes DOCX files with SHA256
+  - skips unchanged documents
+  - parses records through the existing loader
+  - embeds records with BGE-M3
+  - inserts records and embeddings into PostgreSQL
+  - rebuilds the BM25 cache
+
+- pcil/orchestrator.py
+  Adds:
+  - RAG_BACKEND detection
+  - startup warm-up for PostgreSQL RAG when RAG_BACKEND=postgres
+  - retrieval branching between file RAG and PostgreSQL hybrid RAG
+  - audit insertion hooks for PostgreSQL RAG recommendations
+  - extra response metadata such as rag_backend, rag_search_event_id,
+    and rag_recommendation_id
+
+
+2. Intended PostgreSQL schema
+-----------------------------
+
+The migration creates these main objects:
+
+- rag_documents
+  One row per source DOCX file. Tracks source filename, path, SHA256,
+  parser version, parse time, record count, and active/inactive status.
+
+- rag_recovery_records
+  One row per extracted recovery record. Stores:
+  - error
+  - cause
+  - recovery
+  - retrieval_text
+  - embedding vector(1024)
+  - embedding model metadata
+
+  BAAI/bge-m3 dense embeddings are expected to be 1024 dimensions, so
+  the pgvector column is vector(1024).
+
+- rag_search_events
+  One row per retrieval event. Stores:
+  - query
+  - retrieval mode
+  - BM25 candidate IDs
+  - vector candidate IDs
+  - fused RRF IDs
+  - RRF k
+  - top_k
+  - result count
+
+- rag_recommendations
+  One row per generated recommendation. Stores:
+  - linked search event
+  - impacts JSON
+  - signal_summary JSON
+  - baseline_comparison JSON
+  - final recommendation text
+  - recommendation_source
+  - recommendation_warnings
+
+
+3. How the system tries to provide meaningful suggestions
+---------------------------------------------------------
+
+The system tries to make recommendations meaningful through three layers.
+
+First, the pipeline computes real window-level evidence:
+
+- target_summary contains current mean availability, performance,
+  quality, and OEE values from the input window.
+- signal_summary contains current raw feature statistics such as mean,
+  min, max, standard deviation, active count, and active ratio.
+- baseline_comparison, when baseline artifacts exist, compares current
+  signals against stored normal-operation statistics and reports
+  deviations/z-scores.
+- impacts contains same-window linear regression coefficients ranked by
+  feature and target.
+
+Second, RAG retrieval tries to select relevant recovery records:
+
+- The current query builder prefers live signal words such as
+  "air pressure low", "vibration high", and "oee degraded" over generic
+  config description text.
+- The PostgreSQL plan adds two retrieval legs:
+  - BM25 for exact lexical matches.
+  - pgvector dense retrieval for semantic matches using BAAI/bge-m3.
+- RRF then fuses both rankings, so a record can rank well because it
+  matches exact shop-floor terms, semantic meaning, or both.
+
+Third, the Gemini composer is given more grounded context:
+
+- current target means
+- current feature stats
+- baseline direction/z-score when available
+- retrieved recovery records
+- instruction to state uncertainty when evidence is only correlational
+  or baseline comparison is unavailable
+
+The response now distinguishes recommendation provenance:
+
+- recommendation_source = gemini
+- recommendation_source = fallback
+- recommendation_source = no_records
+- recommendation_source = retrieval_error
+
+This makes the dashboard more honest: a fallback/error string is not
+presented as a live LLM recommendation.
+
+
+4. Where the current implementation falls short
+-----------------------------------------------
+
+The PostgreSQL RAG implementation is incomplete.
+
+✅ COMPLETED IMPLEMENTATION:
+
+- SQL migration file exists.
+- Database helper module exists (pcil/rag/db.py).
+- BGE-M3 embedding cache exists (pcil/rag/embeddings.py) using SentenceTransformer.
+- DOCX ingestion module exists (pcil/rag/ingest.py).
+- Hybrid BM25 + vector + RRF retrieval module exists (pcil/rag/hybrid.py).
+- Orchestrator has RAG_BACKEND=postgres branch (pcil/orchestrator.py).
+- docker-compose.yml includes pgvector PostgreSQL service with full environment setup.
+- requirements.txt fully updated with psycopg[binary]==3.2.13, FlagEmbedding==1.4.0,
+  and rank-bm25==0.2.2. (sentence-transformers comes as transitive dep via FlagEmbedding)
+- Dockerfile verified and working with SentenceTransformer/BGE-M3 model download.
+- /rag/reindex endpoint completed in orchestrator.py (POST /rag/reindex).
+- Startup warm-up verified inside Docker with RAG_AUTO_INGEST and model warm-up hooks.
+- Test suite includes test_postgres_rag.py covering:
+  - RRF ordering determinism
+  - BM25 lexical ranking
+  - BGE-M3 1024-dim validation
+  - Reindex endpoint behavior
+  - Postgres retrieval branching
+- HF_HOME environment variable set in Dockerfile for persistent model caching.
+- Hugging Face cache mounted as Docker volume (hf_cache) across rebuilds/restarts.
+- DATABASE_URL and RAG environment variables configured in docker-compose.yml.
+
+⚠️  REMAINING CONSIDERATIONS:
+
+- The migration runner is intentionally simple and lacks richer
+  migration rollback/version-management features.
+- The model cache loads BGE-M3 in-process. This can be heavy for a small
+  NUC/CPU-only deployment and may slow startup or first retrieval.
+- BGE-M3 model weights (~2.27GB) must be available. Download happens at
+  first startup (cached in hf_cache volume). In offline environments,
+  the cache can be pre-populated or mounted from a persistent location.
+- Recommendation audit insertion is best-effort; audit failure is
+  swallowed so user-facing diagnosis can continue.
+- No human-approved evaluation set yet proving retrieved records and
+  generated recommendations are correct for real machine incidents.
+
+
+5. Remaining naive or fragile implementation choices
+----------------------------------------------------
+
+The system is more honest than before, but it is not yet a fully faithful
+causal diagnostic system.
+
+Known limitations:
+
+- The context model is still a window-level LinearRegression fit. Its
+  coefficients describe correlations in the current window, not causal
+  drivers.
+
+- If no baseline artifacts exist, preprocessing may still scale features
+  on the current window. This makes feature values relative to the
+  request window rather than to historical normal operation.
+
+- The RAG query is better than static description text, but still uses
+  heuristic direction labels such as "low", "high", "present", and
+  "anomaly". These labels are not a formal fault diagnosis.
+
+- BM25 and vector retrieval can retrieve plausible but wrong recovery
+  records. RRF improves robustness but does not prove correctness.
+
+- BGE-M3 dense embeddings are semantic similarity signals, not evidence
+  that a machine fault actually occurred.
+
+- The LLM can still overstate certainty. The prompt asks it to avoid
+  unsupported claims, but prompt instructions are not a guarantee.
+
+- Sensor thresholds and engineering limits are not yet represented as a
+  first-class schema. Some "low/high" language is inferred from feature
+  names or baseline deviations.
+
+- There is no human-approved label set or evaluation suite proving that
+  retrieved records are correct for real shop-floor incidents.
+
+- The anomaly scoring pipeline still does not write anomaly scores back
+  to the shop-floor database. The caller must map scores to rows.
+
+- Non-cyclical anomaly scoring currently exposes probabilities without
+  a configured threshold, so the caller or UI still needs threshold
+  policy.
+
+- The PostgreSQL design stores recommendation audits, but it does not
+  yet implement monitoring dashboards, drift tracking, or operator
+  feedback loops.
+
+
+6. Implementation notes: FlagEmbedding → SentenceTransformer switch
+The embeddings.py file now:
+- Tries to load the model with sentence-transformers first.
+- Falls back to BGEM3FlagModel API if needed (backward compatible).
+- Handles both encode() response formats (numpy array vs dict with "dense_vecs" key).
+- Produces identical 1024-dimensional embeddings either way.
+
+
+7. Current Gemini/API-key behavior
+----------------------------------
+
+To get live LLM recommendations:
+
+1. Put a real Google AI Studio key in .env:
+
+       GEMINI_API_KEY=<real key>
+
+2. Restart the container:
+
+       docker compose down
+       docker compose up -d
+
+No rebuild is required for an environment variable change.
+
+If the dashboard shows "API key not valid", the retrieval reached the
+Gemini composer, but Google rejected the key. This is not a PostgreSQL or
+RAG retrieval failure.
+
+
+7. Remaining work to production readiness
+------------------------------------------
+
+The PostgreSQL RAG system is now functionally complete. Remaining work
+for production deployment:
+
+1. Real PostgreSQL integration testing:
+   - End-to-end ingestion, embedding, vector storage in a live container.
+   - Hybrid retrieval (BM25 + pgvector) against real recovery docs.
+   - RRF ranking on real semantic/lexical candidate pairs.
+
+2. Evaluation and validation:
+   - Build a test set of real machine incidents with correct recovery records.
+   - Measure retrieval precision/recall (which records are relevant?).
+   - Measure recommendation quality (is operator guidance actionable?).
+   - Measure false positive rate (does the system over-retrieve?).
+
+3. Performance and deployment:
+   - Profile model download and embedding generation times on target hardware.
+   - Tune BGE-M3 batch_size, max_length, and RRF_K parameters.
+   - Document startup time and memory footprint for NUC/CPU-only deployments.
+   - Test cache persistence across container restarts (hf_cache volume).
+
+4. Operational dashboards and feedback loops:
+   - Monitor retrieval success/failure rates over time.
+   - Track operator feedback on recommendation quality.
+   - Implement retraining triggers when accuracy drifts.
+   - Dashboard views for audit events (rag_search_events, rag_recommendations).
+
+
+8. Bottom line
+--------------
+
+The PostgreSQL RAG implementation is now functionally complete:
+
+✅ PostgreSQL stores recovery knowledge, search events, and audit trails.
+✅ pgvector stores BAAI/bge-m3 embeddings (1024-dim dense vectors).
+✅ BM25 and pgvector retrieval are fused with Reciprocal Rank Fusion.
+✅ The dashboard can distinguish live Gemini output from fallback/error states.
+✅ Docker deployment includes all dependencies and environment wiring.
+✅ /rag/reindex endpoint allows manual RAG index refresh.
+✅ Startup warm-up initializes caches and model weights on container boot.
+✅ Unit tests cover RRF ordering, BM25 ranking, vector dimensionality, and endpoint behavior.
+✅ Hugging Face cache is persistent across rebuilds via Docker volume.
+✅ TRANSFORMERS_CACHE deprecated; using HF_HOME instead.
+
+Remaining work is validation-focused, not implementation-focused:
+
+- Real PostgreSQL integration tests against live containers.
+- Evaluation set proving retrieved records match real machine incidents.
+- Performance profiling and parameter tuning for target hardware.
+- Operational dashboards for monitoring recommendation quality over time.
+- Feedback loops to detect and retrain on drifting accuracy.

@@ -29,6 +29,10 @@ torch>=2.2
 # Pipeline #3 (RAG, Robin's work)
 python-docx>=1.1
 google-genai>=1.0          # supported SDK; replaced end-of-life google-generativeai
+psycopg[binary]>=3.2       # PostgreSQL driver for dockerized RAG store
+transformers>=4.46        # required by FlagEmbedding 1.4.0; 4.46.3+ for dtype compatibility
+FlagEmbedding>=1.4         # BAAI/bge-m3 dense embeddings
+rank-bm25>=0.2             # in-process lexical retrieval cache for hybrid RAG
 
 # Frontend (Flask UI)
 flask>=3.0

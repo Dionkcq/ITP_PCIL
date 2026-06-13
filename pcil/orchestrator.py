@@ -848,6 +848,9 @@ def root() -> dict:
                 "POST /anomaly/score",
                 "GET /anomaly/models",
             ],
+            "rag": [
+                "POST /rag/reindex",
+            ],
             "config": [
                 "GET /configs",
                 "GET /configs/load",
@@ -994,6 +997,32 @@ def save_csv(req: SaveCsvRequest) -> dict:
 # instead of ever producing a corrupt file. Every overwrite stores a
 # timestamped backup under machines/<machine>/.backups/.
 # ─────────────────────────────────────────────────────────────
+
+@app.post("/rag/reindex", tags=["rag"])
+def reindex_rag() -> dict:
+    """Rebuild the PostgreSQL RAG store from the mounted DOCX directory."""
+    if _rag_backend() != "postgres":
+        return {
+            "status": "skipped",
+            "rag_backend": _rag_backend(),
+            "message": "RAG_BACKEND is not 'postgres'; file-based RAG is active.",
+        }
+    if not RAG_DIR.is_dir():
+        raise HTTPException(
+            status_code=404,
+            detail=f"RAG document directory not found at {RAG_DIR}",
+        )
+    try:
+        from pcil.rag.ingest import ingest_rag_dir
+
+        result = ingest_rag_dir(RAG_DIR)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=500,
+            detail=f"RAG reindex failed ({type(exc).__name__}): {exc}",
+        ) from exc
+    return {"rag_backend": "postgres", **result}
+
 
 # Root folder of per-machine recipes. CWD-relative to match how
 # config_path strings resolve everywhere else (dev: PCIL_dev/machines,

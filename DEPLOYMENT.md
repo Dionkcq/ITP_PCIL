@@ -11,6 +11,11 @@ The container serves two things on **port 8000**:
 
 ---
 
+The compose stack also starts PostgreSQL with pgvector. RAG recovery
+records are ingested from `data/RAG/*.docx`, embedded with BAAI/bge-m3,
+stored in PostgreSQL, and retrieved with BM25 + pgvector + RRF before
+Gemini writes the final recommendation.
+
 ## 1. What you need
 
 | Item | Notes |
@@ -71,12 +76,20 @@ Create a file named `.env` next to `docker-compose.yml`:
 
 ```bash
 GEMINI_API_KEY=your_real_key_here
+POSTGRES_PASSWORD=
 # PCIL_PORT=8000          # change if 8000 is taken on the host
 # PCIL_DATA_DIR=./data    # change if data/ lives elsewhere
 ```
 
-Skipping this step is fine — the service boots without it and degrades
-gracefully (see section 7).
+Skipping `GEMINI_API_KEY` is fine — the service boots without it and
+degrades gracefully (see section 7).
+
+`POSTGRES_PASSWORD` is required for the private pgvector service. Generate
+a local value, for example with PowerShell:
+
+```powershell
+[guid]::NewGuid().ToString("N")
+```
 
 ## 4. Start and verify
 
@@ -84,6 +97,16 @@ gracefully (see section 7).
 docker compose up -d
 docker compose ps          # state should be "running (healthy)" after ~20 s
 curl http://localhost:8000/
+```
+
+On first startup, the API runs RAG migrations and ingests changed DOCX
+files when `RAG_BACKEND=postgres` and `RAG_AUTO_INGEST=true` (the compose
+defaults). BGE-M3 model files are cached in a Docker volume, so the first
+boot can be slower than later restarts. If you add or edit DOCX recovery
+files after startup, refresh the PostgreSQL RAG index without rebuilding:
+
+```bash
+curl -X POST http://localhost:8000/rag/reindex
 ```
 
 `GET /` returns service metadata including an endpoint index. Then open
@@ -177,6 +200,7 @@ Base URL: `http://<host>:8000`
 | POST | `/configs/create` | Create a brand-new machine folder + recipe (never overwrites) |
 | POST | `/configs/delete` | Delete a recipe (recoverable — moved into `.backups/`, not destroyed) |
 | GET | `/anomaly/models` | List the trained `.pkl` bundles present in `data/` |
+| POST | `/rag/reindex` | Re-ingest DOCX recovery records into PostgreSQL and refresh BM25/vector RAG |
 | GET | `/docs` | Swagger UI — interactive docs for every endpoint above |
 | GET | `/dashboard/` | Operator dashboard (Diagnosis / Anomaly check / Train / Config recipes tabs) |
 

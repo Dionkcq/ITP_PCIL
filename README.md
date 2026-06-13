@@ -405,6 +405,27 @@ docker compose logs -f    # follow logs
 docker compose down       # stop
 ```
 
+Compose now starts two services: `postgres` (`pgvector/pgvector:pg16`)
+and `pcil`. By default Docker uses the PostgreSQL RAG backend
+(`RAG_BACKEND=postgres`): migrations run at startup, changed
+`data/RAG/*.docx` files are ingested, BAAI/bge-m3 embeddings are stored
+in pgvector, and BM25 + vector candidates are fused with RRF. To force
+the older file-backed RAG path for lightweight local testing, set
+`RAG_BACKEND=file` in `.env` and restart.
+
+`POSTGRES_PASSWORD` must be set in `.env` before running Compose. Generate
+a local value, for example with PowerShell:
+
+```powershell
+[guid]::NewGuid().ToString("N")
+```
+
+Manual RAG reindex after changing DOCX files:
+
+```powershell
+curl -X POST http://localhost:8000/rag/reindex
+```
+
 Plain `docker` still works if compose is unavailable:
 
 ```powershell

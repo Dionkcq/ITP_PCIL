@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from pcil.rag.db import connect, run_migrations, vector_literal
-from pcil.rag.embeddings import DEFAULT_EMBEDDING_MODEL, EMBEDDING_DIM, EmbeddingModelCache
+from pcil.rag.embeddings import EMBEDDING_DIM, EmbeddingModelCache
 from pcil.rag.hybrid import BM25IndexCache
 from pcil.rag.loader import load_docx
 
@@ -137,7 +137,7 @@ def ingest_rag_dir(rag_dir: Path) -> dict[str, Any]:
                         record["recovery"],
                         text,
                         vector_literal(embedding),
-                        DEFAULT_EMBEDDING_MODEL,
+                        EmbeddingModelCache.model_name(),
                         EMBEDDING_DIM,
                     ),
                 )

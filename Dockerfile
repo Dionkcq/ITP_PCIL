@@ -33,7 +33,9 @@ COPY dashboard/ ./
 RUN npm run build
 
 # ── Stage 2: Python runtime ──────────────────────────────────────────
-FROM python:3.13-slim
+# Python 3.12: tokenizers/transformers have full PyO3 support.
+# (3.13 has PyO3 compatibility issues with tokenizers 0.19.x)
+FROM python:3.12-slim
 
 # Runtime libs for the scientific Python stack. sklearn relies on libgomp;
 # keep the rest minimal so the image stays small.
@@ -48,9 +50,18 @@ WORKDIR /app
 # first: the default PyPI torch wheel bundles CUDA and is ~GB, which the
 # NUC does not need. The subsequent requirements install then sees
 # torch>=2.2 already satisfied and skips it.
+#
+# Note: transformers/tokenizers require a Rust compiler to build from source.
+# Install build-essential+rustc for the install step, then remove them to keep
+# the final image slim.
 COPY requirements.txt ./
-RUN pip install --no-cache-dir torch==2.12.0 --index-url https://download.pytorch.org/whl/cpu \
-    && pip install --no-cache-dir -r requirements.txt
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential rustc \
+    && pip install --no-cache-dir torch==2.12.0 --index-url https://download.pytorch.org/whl/cpu \
+    && pip install --no-cache-dir -r requirements.txt \
+    && apt-get purge -y build-essential rustc gcc g++ make \
+    && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
 
 # Application code.
 COPY pcil/ ./pcil/
@@ -66,6 +77,7 @@ ENV DASHBOARD_DIST_DIR=/app/dashboard/dist
 # In dev, orchestrator.py walks up to ITP/ via Path.parents[2]. In the
 # container, /app IS the project root, so set it explicitly.
 ENV PCIL_PROJECT_ROOT=/app
+ENV HF_HOME=/root/.cache/huggingface
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
