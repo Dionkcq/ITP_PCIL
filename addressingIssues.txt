@@ -1,0 +1,138 @@
+# Priority Assessment Before Adding PostgreSQL
+
+Based on the inspection, adding PostgreSQL to a RAG pipeline that has fundamental grounding problems will compound the issues rather than fix them. Here's what to address first, ordered by impact.
+
+---
+
+## Priority 1 — Fix the RAG Query Construction (Highest Leverage)
+
+**The core problem:** `_build_rag_query()` in `orchestrator.py` builds retrieval queries from static config description text, not from what is actually happening in the data.
+
+```python
+# Current — extracts tokens from feature description strings in config.yaml
+# e.g. "Proportion of operating time during which air pressure falls below threshold"
+# becomes: "proportion operating time air pressure falls below threshold"
+# This is vocabulary-adjacent, not anomaly-specific
+def _build_rag_query(impacts: dict) -> str:
+    tokens: set[str] = set()
+    for block in impacts.get("context", []):
+        tokens.add(block["target"])
+        for fi in block.get("ranked_feature_impacts", [])[:2]:
+            description = fi.get("description", "")
+            if description:
+                tokens.update(description.lower().split())  # generic config text
+```
+
+**What it should be doing:** The query should be constructed from *what the data is actually showing* — which features have the largest impact scores, whether those impacts are negative (degrading) or positive, and which targets are most affected.
+
+```python
+# What it should look like conceptually
+def _build_rag_query(impacts: dict) -> str:
+    # Use the top-ranked features with NEGATIVE impact on worst targets
+    # e.g. "air pressure low vibration high oee degraded performance"
+    # This actually matches error/cause text in the DOCX files
+```
+
+**Why this matters before PostgreSQL:** If you store recovery records in PostgreSQL and keep the same query construction logic, you will retrieve the wrong records with more infrastructure overhead.
+
+---
+
+## Priority 2 — Separate the Context Model from the Per-Request Fit
+
+**The core problem:** The LinearRegression is fit fresh on every `/pipeline/run` call against only the current context window. This means:
+
+- "Impacts" are correlations within a single window, not learned patterns
+- A 60-second window with `air_pressure_low_ratio` high and OEE low will produce a high coefficient, but so would any other feature that happens to correlate in that window
+- There is no concept of "normal baseline" to compare against
+
+```python
+# From train_context_model.py — fit happens on every request
+def train_context_model_from_df(golden_df, cfg):
+    model = LinearRegression().fit(X, y)  # X and y are from THIS request only
+```
+
+**What you need before PostgreSQL makes sense:** A baseline model trained on historical normal-operation data. Each new window's predictions are then compared against this baseline. The *deviation* from baseline is what's meaningful to surface. PostgreSQL is the right place to store this historical data — but you need the two-model architecture (baseline + current) designed first, otherwise you are storing data you don't know how to use yet.
+
+**Concrete steps:**
+- Define a training endpoint or script that fits a "normal operation" LinearRegression on a larger historical dataset
+- Store that model as a persistent artifact (already partially done with `persist=True`)
+- At inference time, compare current window coefficients against the baseline model's coefficients to identify deviations
+
+---
+
+## Priority 3 — Fix the LLM Prompt Grounding
+
+**The core problem:** The composer prompt contains coefficient names and scores but no actual sensor values. The LLM cannot reason about severity because it has no numbers that represent what is currently happening.
+
+```python
+# From composer.py — what the LLM actually receives
+f"  - {feat} (score {fi['raw_impact_score']:+.3f}): {desc}"
+# e.g. "air_pressure_low_ratio (score -0.40): Proportion of operating time..."
+# The LLM sees a correlation score, not "air pressure is currently at 0.3 bar, threshold is 0.5 bar"
+```
+
+**What should be added to the prompt:**
+- Current mean value of the feature in this window
+- The feature's normal range (from historical baseline)
+- How many standard deviations from normal it currently is
+- Directional language: "is currently elevated", "is currently below threshold"
+
+This requires Priority 2 to be solved first (you need the baseline to compute deviations), which is why the ordering matters.
+
+---
+
+## Priority 4 — Add a Structured Flag for Fallback vs Live LLM Output
+
+**The core problem:** The API response has no machine-readable field distinguishing a live Gemini response from a fallback error string. The frontend does string matching on the text content.
+
+```python
+# From components.jsx — fragile detection
+const FALLBACK_HINTS = ['not found', 'failed', 'not set', 'No matching recovery']
+export function Recommendation({ text }) {
+    const isFallback = FALLBACK_HINTS.some((h) => (text || '').includes(h))
+```
+
+**The fix is straightforward** — add a `recommendation_source` field to the API response:
+
+```python
+# In orchestrator.py _run_pipeline_on_df()
+return {
+    "operator_recommendation": operator_recommendation,
+    "recommendation_source": "gemini" | "fallback" | "no_records",
+    # ... rest of response
+}
+```
+
+This is low effort and makes the system honest. It also becomes important once you store LLM outputs in PostgreSQL — you need to know which records are real generated text versus error strings.
+
+---
+
+## Priority 5 — Address the Missing Anomaly Score → Shop-Floor Linkage
+
+**The current state:** The anomaly pipelines produce scores, but the README and comments explicitly note that the engineering team must manually write these scores into the shop-floor database rows themselves. The orchestrator never writes anomaly scores back anywhere.
+
+```
+# From README.md
+# "What SIMTech does with the result: take the anomaly_scores array,
+# decide which row of the shop-floor DB it maps to (only SIMTech's
+# ingestion knows that), and UPDATE the row with the correct value.
+# The API does not write to the shop-floor database."
+```
+
+**Why this matters for PostgreSQL planning:** Before you design the PostgreSQL schema, you need to decide if the PCIL service will own write access to the anomaly score columns, or if it remains read-only and score-publishing is done externally. This is an architectural decision that determines your entire PostgreSQL schema design — whether you have one table the engineering team queries, or whether PCIL writes back to their existing schema.
+
+---
+
+## Summary: What to Do Before Adding PostgreSQL
+
+The recommended order is:
+
+**First** — Fix `_build_rag_query()` to use actual data signals rather than config text. This is one function, low risk, immediate improvement to retrieval quality regardless of storage backend.
+
+**Second** — Design the baseline model architecture. Decide what "historical normal" means, how much data constitutes a baseline, and how deviations are measured. This determines what you actually need PostgreSQL to store.
+
+**Third** — Add `recommendation_source` to the API response. Small change, makes the system auditable, essential once you are logging to a database.
+
+**Fourth** — Decide the write-access architecture. Does PCIL write anomaly scores to PostgreSQL, or does it publish them and let the engineering team consume them? This is the most consequential decision for your PostgreSQL schema design, and it should be made explicitly before writing any migration files.
+
+**Then** add PostgreSQL — at that point you will know what data you are storing (baseline models, context windows, anomaly scores, LLM outputs with source flags, recovery records), what queries you need to support, and whether pgvector for semantic retrieval actually improves on TF-IDF for your document corpus size. Adding it before these decisions are made risks building infrastructure around the wrong data model.

@@ -110,18 +110,25 @@ def feature_names_out(pipeline: Pipeline) -> list[str]:
 # Core preprocessing
 # ─────────────────────────────────────────────────────────────
 
-def preprocess(input_df: pd.DataFrame, cfg: dict) -> tuple[pd.DataFrame, Pipeline]:
+def preprocess(
+    input_df: pd.DataFrame,
+    cfg: dict,
+    *,
+    fitted_pipeline: Pipeline | None = None,
+) -> tuple[pd.DataFrame, Pipeline]:
     """
     Convert a shop-floor DataFrame slice into the Golden DataFrame.
 
     Steps:
       1. Drop legacy `scenario` column if present.
       2. Validate required columns are on the input.
-      3. Fit + apply ColumnTransformer.
+      3. Fit + apply ColumnTransformer, or reuse a provided fitted one.
       4. Assemble output: timestamp + targets + transformed features.
 
     Returns (golden_df, fitted_pipeline). The fitted pipeline is returned
-    so callers can persist it alongside the trained model.
+    so callers can persist it alongside the trained model. When
+    fitted_pipeline is provided, it is reused for transform-only inference
+    so live windows stay on the baseline feature scale.
     """
     schema = cfg["input"]
     timestamp_col = schema["timestamp_column"]
@@ -142,9 +149,13 @@ def preprocess(input_df: pd.DataFrame, cfg: dict) -> tuple[pd.DataFrame, Pipelin
             f"preprocess: input slice is missing columns: {sorted(missing)}"
         )
 
-    # 3. Fit + apply ColumnTransformer
-    pipeline = build_preprocessor(numerical, categorical)
-    transformed = pipeline.fit_transform(df)
+    # 3. Fit + apply ColumnTransformer, or reuse a baseline-fitted one.
+    pipeline = fitted_pipeline or build_preprocessor(numerical, categorical)
+    transformed = (
+        pipeline.transform(df)
+        if fitted_pipeline is not None
+        else pipeline.fit_transform(df)
+    )
     feat_names = feature_names_out(pipeline)
     transformed_df = pd.DataFrame(transformed, columns=feat_names, index=df.index)
 

@@ -1,0 +1,155 @@
+### 1. Is the output the app produces hallucinations?
+
+**Partially — the metrics are not hallucinations, but the text recommendation likely is.**
+
+Here is the breakdown:
+
+**Not hallucinated (grounded in real data):**
+- OEE, availability, performance, quality — these are passed through *unchanged* from the shop-floor CSV. `preprocess.py` explicitly re-attaches them as targets without transforming them. They are real numbers from the source data.
+- Feature impact scores — these are real `LinearRegression` coefficients fit on the actual Golden DataFrame for each run. They are mathematically derived, not invented.
+- Anomaly scores — these come from trained sklearn/PyTorch models (Random Forest, Isolation Forest, 1D CNN autoencoder) run on real sensor data.
+- KPI card percentages — computed as `golden_df[target].mean()` over the actual window rows.
+
+**High hallucination risk (the operator recommendation text):**
+
+The Gemini LLM prompt in `composer.py` receives only:
+- The system name ("inkjet_printer")
+- The two lowest-performing targets by intercept value
+- Up to 3 feature names with their coefficient scores
+- 1–3 recovery records retrieved from DOCX files
+
+Critically, it does **not** receive:
+- Actual sensor readings
+- Time-series values
+- Specific thresholds that were breached
+- Historical context
+
+The prompt asks Gemini to write "3–5 sentences for a factory floor operator" based on coefficient names like `air_pressure_low_ratio` with a score of `-0.40`. Gemini has to invent the specifics of *what* is happening, *how severe* it is, and *which exact component* to inspect. This is a classic hallucination setup — the model is given category labels and asked to produce authoritative-sounding specifics.
+
+Additionally, the feature descriptions in `config.yaml` (like `"Proportion of operating time during which air pressure falls below the defined threshold"`) are generic and static — they never change based on the actual current readings.
+
+---
+
+### 2. How are LLM outputs & metrics derived?
+
+**Metrics — structured, accurate calculations:**
+
+```
+CSV file
+  → trigger.py (slice_by_time / slice_last_n_rows)
+  → preprocess.py (MinMaxScaler on numerical features, OneHotEncoder on categorical)
+  → Golden DataFrame (timestamp + targets passed through unchanged + scaled features in [0,1])
+  → adapter.py (validates [0,1] range, reshapes to numpy X and y arrays)
+  → train_context_model.py (fits sklearn LinearRegression on X predicting y)
+  → impacts JSON (regression coefficients, ranked by abs magnitude)
+  → target_summary (mean of each target column over the window)
+```
+
+This is a real, repeatable statistical calculation. The LinearRegression is **fit fresh on every pipeline run** against the current context window — it is not a pre-trained persistent model. This means the "impacts" represent which features co-vary with the targets *in that specific time window*, not a generalized causal relationship.
+
+**LLM output — loosely structured RAG, weak grounding:**
+
+```
+impacts JSON
+  → _build_rag_query() extracts tokens from feature descriptions
+  → TF-IDF cosine similarity against DOCX error/cause text (lookup.py)
+  → top-3 RecoveryRecord dicts retrieved
+  → _build_prompt() constructs ~1800 char prompt with:
+      - system name
+      - 2 worst targets (by intercept value, not current reading)
+      - up to 3 feature descriptions
+      - 3 recovery records (truncated to 300 chars each)
+  → Gemini API call (gemini-2.5-flash)
+  → operator_recommendation string
+```
+
+Several structural weaknesses make this RAG-in-name-only:
+
+- The retrieval query is built from *feature description text*, not from the actual anomaly (e.g. "Proportion of operating time during which air pressure falls below the defined threshold" becomes tokens like "proportion", "operating", "time"). This is vocabulary-adjacent, not semantically precise.
+- The "worst targets" are selected by intercept value (the regression baseline when all features = 0), not by how far current values deviate from normal.
+- The LLM receives coefficient scores but not the actual current sensor readings, so it cannot reason about severity.
+- Fallback strings exist for every failure mode (missing key, no internet, empty records) and are **not visually distinguished** from live LLM output in the raw API response — only the React frontend checks for fallback marker strings and adds a warning badge.
+
+---
+
+### 3. Complete Inspection Checklist (with brief explanations)
+
+---
+
+#### A. Application Launch
+
+- **React build tool**: Vite (`dashboard/vite.config.js`), base path `/dashboard/`, dev port 5173. Production build outputs to `dashboard/dist/`.
+- **How the React app is served in production**: FastAPI's `attach_dashboard()` in `orchestrator.py` calls `StaticFiles(directory=dist_path, html=True)` and mounts it at `/dashboard/`. No separate Node process at runtime.
+- **API base URL resolution**: `dashboard/src/api.js` uses `VITE_ORCHESTRATOR_URL` env var; falls back to empty string (same-origin) in production — correct behavior when FastAPI serves both.
+- **CORS**: `orchestrator.py` adds `CORSMiddleware` with `allow_origins=["*"]` — permissive for PoC, noted as needing tightening for production.
+- **FastAPI startup**: `uvicorn pcil.orchestrator:app` — the `app` object is module-level, endpoints registered with decorators, no lazy initialization.
+
+---
+
+#### B. Data Flow
+
+- **Data source**: A CSV file on disk, path specified in `config.yaml → trigger.source`. In Docker, this is `data/mock_shop_floor.csv` mounted from the host. Alternatively, any CSV can be uploaded directly via `/pipeline/run_csv`.
+- **Trigger/slicing** (`trigger.py`): Three modes — `all` (whole file), `time_range` (inclusive bounds via `slice_by_time`), `last_n` (tail rows via `slice_last_n_rows`). Returns a plain DataFrame.
+- **Preprocessing** (`preprocess.py`): Builds a `sklearn.pipeline.Pipeline` wrapping a `ColumnTransformer`. Numerical features → `MinMaxScaler` (output in [0,1]). Categorical features → `OneHotEncoder(sparse_output=False)`. Timestamp and target columns are passed through by reassembly, not by the transformer.
+- **Golden DataFrame**: The assembled output: `timestamp | targets (unchanged) | scaled features`. This is the contract between Pipeline #1 and Pipeline #2.
+- **Adapter** (`adapter.py`): Validates all columns present, checks no NaNs, checks feature range [0,1] (with 1e-9 tolerance for floating-point overshoot). Reshapes to `X` (features numpy array) and `y` (targets numpy array).
+
+---
+
+#### C. Context Model / "Prediction"
+
+- **Model**: `sklearn.linear_model.LinearRegression`, multi-target (one set of coefficients per target: availability, performance, quality, OEE).
+- **Training**: Fit **fresh on every `/pipeline/run` call** against the current context window's Golden DataFrame. There is no persistent trained model used for inference on new data. The model is a description of the current window, not a predictive model of future states.
+- **Outputs**: Regression coefficients per feature per target, ranked by absolute magnitude. These are labeled "impacts" and represent correlation within the window, not causation.
+- **Intercept**: The predicted target value when all scaled features = 0. Used in `composer.py` to identify "worst performing targets" — a questionable proxy for current performance.
+- **Persistence**: Optional (`persist=True` flag). When enabled, saves `context_model.pkl` and `context_model_impacts.json` to the machine's output directory.
+
+---
+
+#### D. Anomaly Detection
+
+- **Cyclical** (`pcil/utils/anomaly/cyclical/`): 1D CNN autoencoder (selected) or Isolation Forest (fallback). Slices on peak detection, zero-crossing, or fixed period. Features: resampled 100-point waveform (default), FFT coefficients, or 15 summary statistics. Threshold = 95th percentile of training scores. Bundle saved as `cyclical_<model_id>.pkl`.
+- **Non-cyclical** (`pcil/utils/anomaly/non_cyclical/`): Supervised Random Forest. Requires labeled clean + anomaly CSVs. Fixed window of 12,800 rows (0.5s at 25.6kHz). Features: RMS, peak, std, kurtosis, crest factor, FFT band energies across 4 channels. Reported precision ~0.586, recall ~0.680.
+- **Irregular** (`pcil/utils/anomaly/irregular/`): Isolation Forest, unsupervised. Fixed-duration time windows (not row count — critical for irregular sampling). Features: event count, mean/std/max inter-arrival gaps, optional value statistics. Threshold = 95th percentile.
+- **Per-machine normalisation**: All three pipelines use `base.PerMachineNormaliser` — z-score computed per `machine_id` on clean training data only, stored in the bundle, reapplied at inference. This is architecturally correct for multi-machine deployment.
+- **Bundle contract**: All bundles follow the same pattern: `{model, normaliser, feature_columns, machine_id_column, threshold, ...}`. Loaded by `joblib.load()` at score time.
+
+---
+
+#### E. RAG Pipeline
+
+- **Document parsing** (`loader.py`): Reads DOCX paragraphs line by line looking for `"Error Message: ..."`, `"Root Cause: ..."`, `"Recovery Steps: ..."` patterns via regex. Skips `E-Scentz.docx`. Caches per file path. Requires `python-docx`.
+- **Retrieval** (`lookup.py`): TF-IDF vectorization (`sklearn.feature_extraction.text.TfidfVectorizer`) over `error + cause` text. Query is cosine-similarity matched. Records with zero similarity are excluded. This is version 2 — v1 used substring keyword count and had false positives (e.g. "low" matching "flow").
+- **Query construction** (`orchestrator.py → _build_rag_query()`): Extracts tokens from target names and feature description text in the impacts dict. Max 3 features, deduplicates. The query is vocabulary from config descriptions, not from actual sensor values.
+- **LLM composition** (`composer.py`): Calls `google.genai.Client` with `gemini-2.5-flash`. 30-second timeout. Prompt contains: machine name, 2 worst targets (by intercept), top 3 feature descriptions with scores, up to 3 recovery records (truncated to 300 chars). Returns plain text or a fallback string on any exception.
+- **Fallback behavior**: Gracefully degrades at each stage — missing RAG dir → empty records + fallback message; retrieval error → empty records + error message; LLM failure → records survive, recommendation replaced with error string. Records and recommendation are independently guarded.
+
+---
+
+#### F. Dashboard (React)
+
+- **Diagnosis tab**: Calls `/pipeline/run` (configured source) or `/pipeline/run_csv` (uploaded CSV). Displays KPI cards, recommendation, impact bars, evidence list. Maintains up to 10 runs in session history.
+- **KPI cards**: Values come from `target_summary` field = `{target: float(golden_df[target].mean())}`. These are means of the raw target columns (availability, performance, quality, OEE) over the context window. Color-coded: ≥0.85 green, ≥0.6 amber, below red. Ring gauge SVG drawn inline.
+- **"What is driving it" bars**: Populated from `impacts.context[].ranked_feature_impacts`. Bar width = `|standardized_impact_score| / max_abs`. Color: negative = red, positive = green. Target selector dropdown. Tooltip shows feature description from config.
+- **Recommendation display**: Checks for fallback marker strings (`"not found"`, `"failed"`, `"not set"`, `"No matching recovery"`). If detected, adds an amber warning note. The distinction is text-matching, not a structured flag from the API.
+- **Anomaly tab**: Client-side CSV parsing with PapaParse → sends rows as JSON to `/anomaly/score`. Renders SVG bar chart of per-window scores with adjustable threshold (bundle-stored 95th percentile or client-side percentile). Bundle availability indicator polls `/anomaly/models`.
+- **Config tab**: Form-based YAML editor. All saves go through `/configs/validate` then `/configs/save`. Server re-serializes with `yaml.safe_dump` — prevents YAML injection. Overwrites create timestamped backups in `.backups/`. Deletes move files there rather than destroying them.
+
+---
+
+#### G. Metrics Accuracy
+
+- **OEE and component metrics**: Passed through from source data unchanged — they are whatever the upstream system computed. The pipeline does not recalculate OEE from components; it trusts the source CSV.
+- **Feature impact scores**: Real LinearRegression coefficients. Mathematically accurate for describing linear relationships within the context window. Not predictive of future states. Correlation, not causation.
+- **Anomaly scores**: Real model outputs. Non-cyclical RF returns `predict_proba(X)[:, 1]` (class probability). Cyclical autoencoder returns MSE reconstruction error. Irregular IF returns `-score_samples(X)` (negated to make higher = more anomalous). All are legitimate ML outputs on real feature vectors.
+- **Ranking**: Features ranked by `abs(coefficient)`. Standardized score = `coefficient / sum_of_abs_coefficients`. Both are accurately computed.
+
+---
+
+#### H. Hallucination / Honesty Assessment
+
+- **The metrics panel is trustworthy**: KPI values, impact scores, and anomaly scores are all computed from real data through documented mathematical operations.
+- **The text recommendation is unreliable**: The LLM receives no actual sensor readings, no threshold breach details, no historical baseline — only feature names with correlation scores and generic recovery records. It must fabricate the narrative connecting these abstract signals to concrete actionable advice.
+- **The retrieval is weakly grounded**: The TF-IDF query is built from config description text, not from actual anomaly signatures. The top-ranked recovery record may not correspond to the actual fault.
+- **Fallback detection is fragile**: The React frontend checks for fallback strings by substring match. If Gemini returns a response that happens to contain "failed" for unrelated reasons, it would be incorrectly flagged. Conversely, a confident-sounding but hallucinated response would show no warning.
+- **No uncertainty quantification**: Neither the LinearRegression outputs nor the LLM response carry confidence intervals or explicit uncertainty. The dashboard presents all numbers with equal visual authority.

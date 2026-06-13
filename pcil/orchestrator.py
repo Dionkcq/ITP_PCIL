@@ -35,6 +35,7 @@ OpenAPI / Swagger UI:  http://localhost:8000/docs
 from __future__ import annotations
 
 import io
+import json
 import os
 import re
 import shutil
@@ -163,6 +164,10 @@ class RunPipelineRequest(BaseModel):
 
 
 class SaveCsvRequest(BaseModel):
+    config_path: str = Field(..., examples=["machines/inkjet_printer/config.yaml"])
+
+
+class TrainBaselineRequest(BaseModel):
     config_path: str = Field(..., examples=["machines/inkjet_printer/config.yaml"])
 
 
@@ -300,6 +305,194 @@ async def _read_upload_to_df(upload: UploadFile) -> pd.DataFrame:
     return df
 
 
+def _baseline_artifact_paths(cfg: dict) -> dict[str, Path]:
+    output = cfg["_paths"]["output"]
+    return {
+        "preprocessor": output / "baseline_preprocessor.pkl",
+        "model": output / "baseline_context_model.pkl",
+        "stats": output / "baseline_stats.json",
+        "impacts": output / "baseline_context_model_impacts.json",
+    }
+
+
+def _load_baseline_preprocessor(cfg: dict) -> tuple[Any | None, list[str]]:
+    paths = _baseline_artifact_paths(cfg)
+    if not paths["preprocessor"].is_file():
+        return None, ["baseline_preprocessor_missing"]
+    try:
+        return joblib.load(paths["preprocessor"]), []
+    except Exception:  # noqa: BLE001
+        return None, ["baseline_preprocessor_unreadable"]
+
+
+def _load_baseline_stats(cfg: dict) -> tuple[dict | None, list[str]]:
+    paths = _baseline_artifact_paths(cfg)
+    if not paths["stats"].is_file():
+        return None, ["baseline_stats_missing"]
+    try:
+        return json.loads(paths["stats"].read_text(encoding="utf-8")), []
+    except Exception:  # noqa: BLE001
+        return None, ["baseline_stats_unreadable"]
+
+
+def _series_stats(df: pd.DataFrame, col: str) -> dict[str, Any]:
+    values = pd.to_numeric(df[col], errors="coerce").dropna()
+    if values.empty:
+        return {
+            "count": 0,
+            "mean": None,
+            "min": None,
+            "max": None,
+            "std": None,
+            "active_count": 0,
+            "active_ratio": None,
+        }
+    active_count = int((values > 0).sum())
+    return {
+        "count": int(values.count()),
+        "mean": float(values.mean()),
+        "min": float(values.min()),
+        "max": float(values.max()),
+        "std": float(values.std(ddof=0)),
+        "active_count": active_count,
+        "active_ratio": float(active_count / values.count()),
+    }
+
+
+def _target_status(value: float | None) -> str:
+    if value is None:
+        return "unknown"
+    if value >= 0.85:
+        return "good"
+    if value >= 0.6:
+        return "watch"
+    return "degraded"
+
+
+def _signal_summary(slice_df: pd.DataFrame, cfg: dict) -> dict[str, Any]:
+    schema = cfg["input"]
+    numerical = list(schema.get("numerical_features", []) or [])
+    targets = list(schema.get("targets", []) or [])
+
+    features = {
+        col: _series_stats(slice_df, col)
+        for col in numerical
+        if col in slice_df.columns
+    }
+    target_stats: dict[str, Any] = {}
+    for col in targets:
+        if col not in slice_df.columns:
+            continue
+        stats = _series_stats(slice_df, col)
+        target_stats[col] = {
+            **stats,
+            "status": _target_status(stats["mean"]),
+        }
+    return {
+        "source": "raw_window",
+        "features": features,
+        "targets": target_stats,
+    }
+
+
+def _baseline_stats_from_df(slice_df: pd.DataFrame, cfg: dict) -> dict[str, Any]:
+    timestamp_col = cfg["input"]["timestamp_column"]
+    timestamps = pd.to_datetime(slice_df[timestamp_col])
+    summary = _signal_summary(slice_df, cfg)
+    return {
+        "trained_at": datetime.now(timezone.utc).isoformat(),
+        "rows": int(len(slice_df)),
+        "context_window": {
+            "start_time": timestamps.min().isoformat(),
+            "end_time": timestamps.max().isoformat(),
+        },
+        "features": summary["features"],
+        "targets": summary["targets"],
+    }
+
+
+def _compare_to_baseline(
+    signal_summary: dict[str, Any],
+    baseline_stats: dict | None,
+) -> dict[str, Any]:
+    if not baseline_stats:
+        return {
+            "status": "not_available",
+            "features": {},
+            "targets": {},
+        }
+
+    def compare_group(group: str) -> dict[str, Any]:
+        current_group = signal_summary.get(group, {})
+        baseline_group = baseline_stats.get(group, {})
+        compared: dict[str, Any] = {}
+        for name, current in current_group.items():
+            base = baseline_group.get(name)
+            if not base:
+                continue
+            current_mean = current.get("mean")
+            baseline_mean = base.get("mean")
+            baseline_std = base.get("std")
+            if current_mean is None or baseline_mean is None:
+                continue
+            deviation = float(current_mean - baseline_mean)
+            z_score = (
+                float(deviation / baseline_std)
+                if baseline_std not in (None, 0)
+                else None
+            )
+            direction = "within_baseline"
+            if z_score is not None and z_score >= 1.0:
+                direction = "above_baseline"
+            elif z_score is not None and z_score <= -1.0:
+                direction = "below_baseline"
+            compared[name] = {
+                "current_mean": float(current_mean),
+                "baseline_mean": float(baseline_mean),
+                "baseline_std": baseline_std,
+                "deviation_from_baseline": deviation,
+                "z_score": z_score,
+                "direction": direction,
+            }
+        return compared
+
+    return {
+        "status": "available",
+        "trained_at": baseline_stats.get("trained_at"),
+        "features": compare_group("features"),
+        "targets": compare_group("targets"),
+    }
+
+
+def _save_baseline_artifacts(
+    cfg: dict,
+    preprocessor: Any,
+    model: Any,
+    impacts: dict,
+    baseline_stats: dict,
+    *,
+    feature_names: list[str],
+    target_names: list[str],
+) -> dict[str, str]:
+    paths = _baseline_artifact_paths(cfg)
+    paths["stats"].parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump(preprocessor, paths["preprocessor"])
+    joblib.dump(
+        {
+            "model": model,
+            "feature_names": feature_names,
+            "target_names": target_names,
+            "model_role": "baseline_context_model",
+        },
+        paths["model"],
+    )
+    paths["impacts"].write_text(json.dumps(impacts, indent=2), encoding="utf-8")
+    paths["stats"].write_text(
+        json.dumps(baseline_stats, indent=2), encoding="utf-8",
+    )
+    return {name: str(path) for name, path in paths.items()}
+
+
 def _run_pipeline_on_df(
     slice_df: pd.DataFrame,
     cfg: dict,
@@ -322,11 +515,31 @@ def _run_pipeline_on_df(
             detail="input slice is empty; nothing to process",
         )
 
+    response_warnings: list[str] = []
+    baseline_preprocessor, baseline_preprocessor_warnings = _load_baseline_preprocessor(cfg)
+    response_warnings.extend(baseline_preprocessor_warnings)
+    signal_summary = _signal_summary(slice_df, cfg)
+    baseline_stats, baseline_stats_warnings = _load_baseline_stats(cfg)
+    response_warnings.extend(baseline_stats_warnings)
+    baseline_comparison = _compare_to_baseline(signal_summary, baseline_stats)
+
     try:
-        golden_df, _fitted_preprocessor = preprocess(slice_df, cfg)
+        golden_df, _fitted_preprocessor = preprocess(
+            slice_df,
+            cfg,
+            fitted_pipeline=baseline_preprocessor,
+        )
         targets, features = column_names_from_config(cfg, golden_df)
         _bundle = adapt(golden_df, targets, features)
         impacts, model = train_context_model_from_df(golden_df, cfg)
+        impacts["model_role"] = "window_correlation_model"
+        impacts["preprocessing_source"] = (
+            "baseline_preprocessor"
+            if baseline_preprocessor is not None
+            else "fit_on_current_window"
+        )
+        if baseline_preprocessor is None:
+            response_warnings.append("features_scaled_on_current_window")
     except ValueError as exc:
         # preprocess/adapter raise ValueError on schema problems. Convert
         # to a clean 400 instead of leaking a 500 with a stack trace.
@@ -347,7 +560,11 @@ def _run_pipeline_on_df(
     # the operator still gets the retrieved recovery records.
     if RAG_DIR.is_dir():
         try:
-            rag_query = _build_rag_query(impacts)
+            rag_query = _build_rag_query(
+                impacts,
+                signal_summary=signal_summary,
+                baseline_comparison=baseline_comparison,
+            )
             all_records = load_all_recovery_docs(RAG_DIR)
             recovery_records = lookup_keywords(rag_query, all_records, top_k=3)
         except Exception as exc:  # noqa: BLE001
@@ -356,16 +573,43 @@ def _run_pipeline_on_df(
                 f"RAG retrieval failed ({type(exc).__name__}): {exc}. "
                 "Review the impacts data manually."
             )
+            recommendation_source = "retrieval_error"
+            recommendation_warnings = ["rag_retrieval_failed"]
         else:
-            try:
+            if not recovery_records:
                 operator_recommendation = compose_recommendation(
-                    impacts, recovery_records,
+                    impacts,
+                    recovery_records,
+                    signal_summary=signal_summary,
+                    baseline_comparison=baseline_comparison,
                 )
-            except Exception as exc:  # noqa: BLE001
-                operator_recommendation = (
-                    f"LLM composition failed ({type(exc).__name__}): {exc}. "
-                    "Review the recovery records below manually."
-                )
+                recommendation_source = "no_records"
+                recommendation_warnings = ["no_matching_recovery_records"]
+            else:
+                try:
+                    operator_recommendation = compose_recommendation(
+                        impacts,
+                        recovery_records,
+                        signal_summary=signal_summary,
+                        baseline_comparison=baseline_comparison,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    operator_recommendation = (
+                        f"LLM composition failed ({type(exc).__name__}): {exc}. "
+                        "Review the recovery records below manually."
+                    )
+                    recommendation_source = "fallback"
+                    recommendation_warnings = ["llm_composition_failed"]
+                else:
+                    if operator_recommendation.startswith("LLM composition failed"):
+                        recommendation_source = "fallback"
+                        recommendation_warnings = ["llm_composition_failed"]
+                    elif operator_recommendation.startswith("LLM returned an empty response"):
+                        recommendation_source = "fallback"
+                        recommendation_warnings = ["llm_empty_response"]
+                    else:
+                        recommendation_source = "gemini"
+                        recommendation_warnings = []
     else:
         recovery_records = []
         operator_recommendation = (
@@ -373,6 +617,8 @@ def _run_pipeline_on_df(
             f"Expected: {RAG_DIR}. "
             "Mount the data/RAG/ folder and restart the orchestrator."
         )
+        recommendation_source = "fallback"
+        recommendation_warnings = ["rag_directory_missing"]
     # ---------------------------------------------------------------
 
     # Window-level mean of each target, for the dashboard KPI cards.
@@ -388,8 +634,13 @@ def _run_pipeline_on_df(
         "golden_rows": int(len(golden_df)),
         "impacts": impacts,
         "target_summary": target_summary,
+        "signal_summary": signal_summary,
+        "baseline_comparison": baseline_comparison,
         "recovery_records": recovery_records,
         "operator_recommendation": operator_recommendation,
+        "recommendation_source": recommendation_source,
+        "recommendation_warnings": recommendation_warnings,
+        "pipeline_warnings": response_warnings,
         "artifacts": artifact_paths,
     }
 
@@ -405,23 +656,80 @@ def _context_window_filename(slice_df: pd.DataFrame, timestamp_col: str) -> str:
     return f"context_window_{times.min().strftime(fmt)}_{times.max().strftime(fmt)}.csv"
 
 
-def _build_rag_query(impacts: dict) -> str:
-    """Build a keyword query string from the impacts dict for RAG retrieval.
+def _feature_terms(feature: str) -> list[str]:
+    return [t for t in feature.lower().split("_") if len(t) > 2]
 
-    Extracts vocabulary from feature descriptions so that tokens match
-    human-readable DOCX error text. Falls back to splitting the column name
-    on underscores when no description is available.
+
+def _direction_for_feature(
+    feature: str,
+    signal_summary: dict[str, Any] | None,
+    baseline_comparison: dict[str, Any] | None,
+) -> str | None:
+    baseline = (baseline_comparison or {}).get("features", {}).get(feature, {})
+    direction = baseline.get("direction")
+    if direction == "above_baseline":
+        return "high"
+    if direction == "below_baseline":
+        return "low"
+
+    stats = (signal_summary or {}).get("features", {}).get(feature, {})
+    mean = stats.get("mean")
+    if mean is None:
+        return None
+    if feature.endswith("_low_ratio") and mean > 0:
+        return "low"
+    if feature.endswith("_present") and stats.get("active_count", 0) > 0:
+        return "present"
+    if "anomaly_score" in feature and mean > 0:
+        return "anomaly"
+    return None
+
+
+def _build_rag_query(
+    impacts: dict,
+    *,
+    signal_summary: dict[str, Any] | None = None,
+    baseline_comparison: dict[str, Any] | None = None,
+) -> str:
+    """Build a signal-aware keyword query for RAG retrieval.
+
+    Prefer live feature names and direction ("air pressure low",
+    "vibration high", "OEE degraded") over static config prose. This
+    keeps retrieval tied to what the current window is actually showing.
     """
-    tokens: set[str] = set()
-    for block in impacts.get("context", []):
-        tokens.add(block["target"])
-        for fi in block.get("ranked_feature_impacts", [])[:2]:
-            description = fi.get("description", "")
-            if description:
-                tokens.update(description.lower().split())
+    phrases: list[str] = []
+    target_stats = (signal_summary or {}).get("targets", {})
+    context_blocks = impacts.get("context", [])
+
+    def target_key(block: dict) -> float:
+        mean = target_stats.get(block["target"], {}).get("mean")
+        return mean if mean is not None else block.get("intercept", 1.0)
+
+    for block in sorted(context_blocks, key=target_key)[:2]:
+        target = block["target"]
+        status = target_stats.get(target, {}).get("status")
+        if status in {"degraded", "watch"}:
+            phrases.append(f"{target} degraded")
+        else:
+            phrases.append(target)
+
+        ranked = block.get("ranked_feature_impacts", [])
+        negative = [fi for fi in ranked if fi.get("raw_impact_score", 0) < 0]
+        selected = (negative or ranked)[:3]
+        for fi in selected:
+            feature = fi["feature"]
+            terms = _feature_terms(feature)
+            direction = _direction_for_feature(
+                feature,
+                signal_summary,
+                baseline_comparison,
+            )
+            if direction:
+                phrases.append(" ".join([*terms, direction]))
             else:
-                tokens.update(fi["feature"].lower().split("_"))
-    return " ".join(tokens)
+                phrases.append(" ".join(terms))
+
+    return " ".join(p for p in phrases if p)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -438,6 +746,7 @@ def root() -> dict:
             "pipeline": [
                 "POST /pipeline/run",
                 "POST /pipeline/run_csv",
+                "POST /pipeline/train_baseline",
                 "POST /pipeline/save_csv",
             ],
             "anomaly": [
@@ -510,6 +819,53 @@ async def run_pipeline_csv(
     df = await _read_upload_to_df(file)
     _, cfg = _resolve_config(config_path)
     return _run_pipeline_on_df(df, cfg, persist=persist)
+
+
+@app.post("/pipeline/train_baseline", tags=["pipeline"])
+def train_baseline(req: TrainBaselineRequest) -> dict:
+    """Train and persist the normal-operation baseline artifacts.
+
+    The configured trigger source should point at historical normal data.
+    Later /pipeline/run calls reuse the saved preprocessor and compare
+    live windows against the saved raw feature/target statistics.
+    """
+    _, cfg = _resolve_config(req.config_path)
+    baseline_df = _pull_slice(cfg)
+    if baseline_df.empty:
+        raise HTTPException(
+            status_code=400,
+            detail="baseline slice is empty; nothing to train",
+        )
+
+    try:
+        golden_df, fitted_preprocessor = preprocess(baseline_df, cfg)
+        targets, features = column_names_from_config(cfg, golden_df)
+        _bundle = adapt(golden_df, targets, features)
+        impacts, model = train_context_model_from_df(golden_df, cfg)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    impacts["model_role"] = "baseline_context_model"
+    impacts["preprocessing_source"] = "fit_on_baseline"
+    baseline_stats = _baseline_stats_from_df(baseline_df, cfg)
+    artifact_paths = _save_baseline_artifacts(
+        cfg,
+        fitted_preprocessor,
+        model,
+        impacts,
+        baseline_stats,
+        feature_names=features,
+        target_names=targets,
+    )
+
+    return {
+        "status": "ok",
+        "baseline_rows": int(len(baseline_df)),
+        "golden_rows": int(len(golden_df)),
+        "impacts": impacts,
+        "baseline_stats": baseline_stats,
+        "artifacts": artifact_paths,
+    }
 
 
 @app.post("/pipeline/save_csv", tags=["pipeline"])
@@ -1114,6 +1470,9 @@ def _score_non_cyclical(req: "AnomalyScoreRequest") -> dict:
         "input_rows": int(len(df)),
         "windows_scored": int(len(scored)),
         "anomaly_scores": scored["anomaly_score"].tolist(),
+        "is_anomaly": None,
+        "threshold": None,
+        "threshold_source": "not_configured",
         "window_starts": scored["window_start_idx"].tolist(),
         "bundle_path": str(bundle_path),
     }
@@ -1160,6 +1519,15 @@ def _score_cyclical(req: "AnomalyScoreRequest") -> dict:
 
     scored = cyclical_score(df, bundle)
 
+    threshold = bundle.get("threshold")
+    threshold_source = (
+        "bundle_95th_percentile"
+        if threshold is not None
+        else "score_median_fallback"
+    )
+    if threshold is None and "anomaly_score" in scored.columns and not scored.empty:
+        threshold = float(scored["anomaly_score"].median())
+
     return {
         "status": "ok",
         "model_type": "cyclical",
@@ -1172,7 +1540,8 @@ def _score_cyclical(req: "AnomalyScoreRequest") -> dict:
             if "is_anomaly" in scored.columns
             else None
         ),
-        "threshold": bundle.get("threshold"),
+        "threshold": threshold,
+        "threshold_source": threshold_source,
         "cycle_start_timestamps": (
             scored["cycle_start_timestamp"].astype(str).tolist()
             if "cycle_start_timestamp" in scored.columns
@@ -1227,6 +1596,15 @@ def _score_irregular(req: "AnomalyScoreRequest") -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    threshold = bundle.get("threshold")
+    threshold_source = (
+        "bundle_95th_percentile"
+        if threshold is not None
+        else "score_median_fallback"
+    )
+    if threshold is None and "anomaly_score" in scored.columns and not scored.empty:
+        threshold = float(scored["anomaly_score"].median())
+
     return {
         "status": "ok",
         "model_type": "irregular",
@@ -1235,7 +1613,8 @@ def _score_irregular(req: "AnomalyScoreRequest") -> dict:
         "windows_scored": int(len(scored)),
         "anomaly_scores": scored["anomaly_score"].tolist(),
         "is_anomaly": scored["is_anomaly"].tolist(),
-        "threshold": bundle.get("threshold"),
+        "threshold": threshold,
+        "threshold_source": threshold_source,
         "window_start_timestamps": (
             scored["window_start_timestamp"].astype(str).tolist()
         ),

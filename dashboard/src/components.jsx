@@ -79,18 +79,17 @@ export function KpiCards({ summary }) {
 }
 
 // ── Operator recommendation ────────────────────────────────────────
-const FALLBACK_HINTS = ['not found', 'failed', 'not set', 'No matching recovery']
-
-export function Recommendation({ text }) {
-  const isFallback = FALLBACK_HINTS.some((h) => (text || '').includes(h))
+export function Recommendation({ text, source, warnings }) {
+  const isFallback = source && source !== 'gemini'
+  const label = source ? source.replaceAll('_', ' ') : 'legacy response'
   return (
     <section className={`reco ${isFallback ? 'reco-fallback' : ''}`}>
-      <h2>Recommendation</h2>
+      <h2>Recommendation <span className="source-pill">{label}</span></h2>
       <p>{text || 'No recommendation returned.'}</p>
       {isFallback && (
         <div className="reco-note">
-          This is a fallback message, not a live LLM result. Check that
-          GEMINI_API_KEY is set and data/RAG/ is mounted.
+          This is not a live grounded Gemini recommendation.
+          {warnings?.length ? ` Warnings: ${warnings.join(', ')}.` : ''}
         </div>
       )}
     </section>
@@ -114,7 +113,7 @@ export function ImpactBars({ impacts }) {
   return (
     <section className="impacts">
       <div className="section-head">
-        <h2>What is driving it</h2>
+        <h2>Correlated signals in this window</h2>
         {blocks.length > 0 && (
           <select value={target} onChange={(e) => setTarget(e.target.value)}>
             {blocks.map((b) => (
@@ -174,12 +173,40 @@ export function EvidenceList({ records }) {
 }
 
 // ── Full diagnosis (reused for the current run and history detail) ─
+export function BaselineComparison({ comparison }) {
+  if (!comparison || comparison.status !== 'available') return null
+  const entries = Object.entries(comparison.features ?? {})
+    .filter(([, v]) => v.z_score != null)
+    .sort((a, b) => Math.abs(b[1].z_score) - Math.abs(a[1].z_score))
+    .slice(0, 4)
+  if (entries.length === 0) return null
+  return (
+    <section className="baseline">
+      <h2>Baseline comparison</h2>
+      <div className="baseline-grid">
+        {entries.map(([name, v]) => (
+          <div key={name} className="baseline-item">
+            <span>{name}</span>
+            <strong>{v.z_score >= 0 ? '+' : ''}{v.z_score.toFixed(2)} z</strong>
+            <em>{v.direction.replaceAll('_', ' ')}</em>
+          </div>
+        ))}
+      </div>
+    </section>
+  )
+}
+
 export function DiagnosisResult({ data }) {
   return (
     <>
       <MetaBar data={data} />
       <KpiCards summary={data.target_summary} />
-      <Recommendation text={data.operator_recommendation} />
+      <Recommendation
+        text={data.operator_recommendation}
+        source={data.recommendation_source}
+        warnings={data.recommendation_warnings}
+      />
+      <BaselineComparison comparison={data.baseline_comparison} />
       <ImpactBars impacts={data.impacts} />
       <EvidenceList records={data.recovery_records} />
     </>

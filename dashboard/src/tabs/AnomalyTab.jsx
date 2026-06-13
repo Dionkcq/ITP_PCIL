@@ -69,6 +69,7 @@ export default function AnomalyTab() {
   const scores = result?.anomaly_scores ?? []
   const hasScores = scores.length > 0
   const serverThreshold = result?.threshold ?? null
+  const thresholdSource = result?.threshold_source ?? null
   const mode = serverThreshold != null ? threshMode : 'percentile'
   const threshold = hasScores
     ? mode === 'server'
@@ -203,9 +204,9 @@ export default function AnomalyTab() {
                     <button
                       className={mode === 'percentile' ? 'on' : ''}
                       onClick={() => setThreshMode('percentile')}
-                      title="Percentile computed over this result's scores"
+                      title="Exploratory percentile computed over this scored batch"
                     >
-                      percentile
+                      exploratory percentile
                     </button>
                   </span>
                 )}
@@ -223,6 +224,11 @@ export default function AnomalyTab() {
                 )}
                 {' = '}
                 {threshold != null ? threshold.toFixed(3) : '—'}
+                {thresholdSource && (
+                  <span title="Threshold provenance">
+                    source: {mode === 'percentile' ? 'client_batch_percentile' : thresholdSource}
+                  </span>
+                )}
               </div>
             </div>
             <ScoreChart scores={scores} threshold={threshold} labels={labels} />

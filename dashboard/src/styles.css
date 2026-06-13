@@ -186,6 +186,36 @@ section h2 {
 .reco p { margin: 0; font-size: 15px; line-height: 1.6; }
 .reco-fallback { border-left-color: var(--warn); }
 .reco-note { margin-top: 12px; font-size: 12px; color: var(--warn); }
+.source-pill {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 7px;
+  border-radius: 5px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+/* Baseline comparison */
+.baseline-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+.baseline-item {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: #fbfcfe;
+}
+.baseline-item span {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.baseline-item strong { display: block; margin-top: 4px; font-size: 18px; }
+.baseline-item em { display: block; margin-top: 2px; font-size: 12px; color: var(--muted); font-style: normal; }
 
 /* Impact bars */
 .bars { display: flex; flex-direction: column; gap: 9px; }

@@ -22,6 +22,8 @@ def compose_recommendation(
     impacts: dict,
     records: list["RecoveryRecord"],
     *,
+    signal_summary: dict | None = None,
+    baseline_comparison: dict | None = None,
     model: str = "gemini-2.5-flash",
 ) -> str:
     """Generate a plain-English operator recommendation.
@@ -56,7 +58,12 @@ def compose_recommendation(
             "Set it before starting the orchestrator."
         )
 
-    prompt = _build_prompt(impacts, records)
+    prompt = _build_prompt(
+        impacts,
+        records,
+        signal_summary=signal_summary,
+        baseline_comparison=baseline_comparison,
+    )
 
     try:
         from google import genai  # noqa: PLC0415
@@ -80,7 +87,13 @@ def compose_recommendation(
         )
 
 
-def _build_prompt(impacts: dict, records: list["RecoveryRecord"]) -> str:
+def _build_prompt(
+    impacts: dict,
+    records: list["RecoveryRecord"],
+    *,
+    signal_summary: dict | None = None,
+    baseline_comparison: dict | None = None,
+) -> str:
     """Construct the Gemini prompt from impacts and retrieved records.
 
     Keeps total length under ~1 800 characters by truncating long
@@ -88,15 +101,28 @@ def _build_prompt(impacts: dict, records: list["RecoveryRecord"]) -> str:
     """
     system_name = impacts.get("system", "unknown system")
 
-    # Identify the two worst-performing targets by lowest intercept.
-    # In this linear model the intercept is the baseline predicted value
-    # when all normalised features are 0 - a lower intercept indicates
-    # a weaker performance baseline for that target.
+    # Identify the weakest targets from actual current target means when
+    # available. Fall back to intercept only for archived responses.
     context_blocks = impacts.get("context", [])
-    sorted_blocks = sorted(context_blocks, key=lambda b: b["intercept"])
+    target_means = {
+        name: stats.get("mean")
+        for name, stats in (signal_summary or {}).get("targets", {}).items()
+    }
+    sorted_blocks = sorted(
+        context_blocks,
+        key=lambda b: (
+            target_means.get(b["target"])
+            if target_means.get(b["target"]) is not None
+            else b["intercept"]
+        ),
+    )
     worst_two = sorted_blocks[:2]
     target_lines = "\n".join(
-        f"  - {b['target']} (baseline: {b['intercept']:.3f})"
+        (
+            f"  - {b['target']} (current mean: {target_means[b['target']]:.3f})"
+            if target_means.get(b["target"]) is not None
+            else f"  - {b['target']} (window intercept: {b['intercept']:.3f})"
+        )
         for b in worst_two
     )
 
@@ -109,8 +135,25 @@ def _build_prompt(impacts: dict, records: list["RecoveryRecord"]) -> str:
             if feat not in seen:
                 seen.add(feat)
                 desc = fi.get("description") or feat.replace("_", " ")
+                current = (signal_summary or {}).get("features", {}).get(feat, {})
+                baseline = (
+                    (baseline_comparison or {})
+                    .get("features", {})
+                    .get(feat, {})
+                )
+                details = [f"score {fi['raw_impact_score']:+.3f}"]
+                if current.get("mean") is not None:
+                    details.append(
+                        f"current mean {current['mean']:.3f}, "
+                        f"range {current.get('min'):.3f}-{current.get('max'):.3f}"
+                    )
+                if baseline.get("z_score") is not None:
+                    details.append(
+                        f"{baseline['direction']} "
+                        f"(z {baseline['z_score']:+.2f})"
+                    )
                 impact_lines.append(
-                    f"  - {feat} (score {fi['raw_impact_score']:+.3f}): {desc}"
+                    f"  - {feat} ({'; '.join(details)}): {desc}"
                 )
             if len(impact_lines) >= 3:
                 break
@@ -139,8 +182,10 @@ def _build_prompt(impacts: dict, records: list["RecoveryRecord"]) -> str:
         f"Top contributing features:\n{impacts_text}\n\n"
         f"Relevant recovery records:\n{records_text}\n\n"
         "Task: Write one concise paragraph (3-5 sentences) for a factory "
-        "floor operator. State what the data suggests is wrong, which "
-        "physical component to inspect first, and the most important "
-        "recovery step from the records above. Use plain language; avoid "
-        "technical jargon or variable names."
+        "floor operator. State only what is supported by the current "
+        "numbers and recovery records. If the evidence is only a "
+        "correlation or the baseline comparison is unavailable, say so "
+        "plainly. Suggest which physical component to inspect first and "
+        "the most important recovery step from the records above. Use "
+        "plain language; avoid technical jargon or variable names."
     )
