@@ -107,6 +107,41 @@ app.add_middleware(
 )
 
 
+def _rag_backend() -> str:
+    return os.environ.get("RAG_BACKEND", "file").lower()
+
+
+def _bool_env(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
+@app.on_event("startup")
+def warm_postgres_rag() -> None:
+    """Warm PostgreSQL RAG caches when the dockerized backend is enabled."""
+    if _rag_backend() != "postgres":
+        return
+    strict = _bool_env("RAG_STRICT_STARTUP", False)
+    try:
+        from pcil.rag.db import run_migrations
+        from pcil.rag.embeddings import EmbeddingModelCache
+        from pcil.rag.hybrid import BM25IndexCache
+        from pcil.rag.ingest import ingest_rag_dir
+
+        run_migrations()
+        if _bool_env("RAG_AUTO_INGEST", True) and RAG_DIR.is_dir():
+            ingest_rag_dir(RAG_DIR)
+        else:
+            BM25IndexCache.rebuild()
+        if _bool_env("RAG_WARM_EMBEDDINGS", True):
+            EmbeddingModelCache.warm_up()
+    except Exception:
+        if strict:
+            raise
+
+
 def attach_dashboard(app: FastAPI, dist_dir: Path | str | None = None) -> Path | None:
     """Serve the built dashboard at /dashboard if static assets are present.
 
@@ -493,6 +528,50 @@ def _save_baseline_artifacts(
     return {name: str(path) for name, path in paths.items()}
 
 
+def _retrieve_recovery_records(rag_query: str, *, top_k: int = 3) -> tuple[list[dict], int | None]:
+    if _rag_backend() == "postgres":
+        from pcil.rag.hybrid import hybrid_lookup, insert_search_event
+
+        recovery_records, meta = hybrid_lookup(rag_query, top_k=top_k)
+        search_event_id = insert_search_event(rag_query, meta)
+        return recovery_records, search_event_id
+
+    if not RAG_DIR.is_dir():
+        raise FileNotFoundError(
+            f"RAG document directory not found. Expected: {RAG_DIR}"
+        )
+    all_records = load_all_recovery_docs(RAG_DIR)
+    return lookup_keywords(rag_query, all_records, top_k=top_k), None
+
+
+def _audit_rag_recommendation(
+    *,
+    search_event_id: int | None,
+    impacts: dict,
+    signal_summary: dict,
+    baseline_comparison: dict,
+    operator_recommendation: str,
+    recommendation_source: str,
+    recommendation_warnings: list[str],
+) -> int | None:
+    if _rag_backend() != "postgres":
+        return None
+    try:
+        from pcil.rag.hybrid import insert_recommendation_event
+
+        return insert_recommendation_event(
+            search_event_id=search_event_id,
+            impacts=impacts,
+            signal_summary=signal_summary,
+            baseline_comparison=baseline_comparison,
+            recommendation_text=operator_recommendation,
+            recommendation_source=recommendation_source,
+            recommendation_warnings=recommendation_warnings,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _run_pipeline_on_df(
     slice_df: pd.DataFrame,
     cfg: dict,
@@ -558,15 +637,27 @@ def _run_pipeline_on_df(
     # fully local (DOCX files on disk), composition needs the Gemini
     # API. If only composition fails (no key, no internet, timeout),
     # the operator still gets the retrieved recovery records.
-    if RAG_DIR.is_dir():
+    rag_search_event_id: int | None = None
+    rag_recommendation_id: int | None = None
+    if _rag_backend() == "file" and not RAG_DIR.is_dir():
+        recovery_records = []
+        operator_recommendation = (
+            "RAG document directory not found. "
+            f"Expected: {RAG_DIR}. "
+            "Mount the data/RAG/ folder and restart the orchestrator."
+        )
+        recommendation_source = "fallback"
+        recommendation_warnings = ["rag_directory_missing"]
+    else:
         try:
             rag_query = _build_rag_query(
                 impacts,
                 signal_summary=signal_summary,
                 baseline_comparison=baseline_comparison,
             )
-            all_records = load_all_recovery_docs(RAG_DIR)
-            recovery_records = lookup_keywords(rag_query, all_records, top_k=3)
+            recovery_records, rag_search_event_id = _retrieve_recovery_records(
+                rag_query, top_k=3,
+            )
         except Exception as exc:  # noqa: BLE001
             recovery_records = []
             operator_recommendation = (
@@ -610,15 +701,15 @@ def _run_pipeline_on_df(
                     else:
                         recommendation_source = "gemini"
                         recommendation_warnings = []
-    else:
-        recovery_records = []
-        operator_recommendation = (
-            "RAG document directory not found. "
-            f"Expected: {RAG_DIR}. "
-            "Mount the data/RAG/ folder and restart the orchestrator."
+        rag_recommendation_id = _audit_rag_recommendation(
+            search_event_id=rag_search_event_id,
+            impacts=impacts,
+            signal_summary=signal_summary,
+            baseline_comparison=baseline_comparison,
+            operator_recommendation=operator_recommendation,
+            recommendation_source=recommendation_source,
+            recommendation_warnings=recommendation_warnings,
         )
-        recommendation_source = "fallback"
-        recommendation_warnings = ["rag_directory_missing"]
     # ---------------------------------------------------------------
 
     # Window-level mean of each target, for the dashboard KPI cards.
@@ -640,6 +731,9 @@ def _run_pipeline_on_df(
         "operator_recommendation": operator_recommendation,
         "recommendation_source": recommendation_source,
         "recommendation_warnings": recommendation_warnings,
+        "rag_backend": _rag_backend(),
+        "rag_search_event_id": rag_search_event_id,
+        "rag_recommendation_id": rag_recommendation_id,
         "pipeline_warnings": response_warnings,
         "artifacts": artifact_paths,
     }

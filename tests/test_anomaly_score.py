@@ -121,6 +121,7 @@ def test_score_cyclical_short_input_returns_zero_cycles(
     assert body["anomaly_scores"] == []
     assert body["is_anomaly"] == []
     assert body["threshold"] == 0.5
+    assert body["threshold_source"] == "bundle_95th_percentile"
 
 
 def test_score_non_cyclical_short_input_returns_zero_windows(
@@ -154,4 +155,7 @@ def test_score_non_cyclical_short_input_returns_zero_windows(
     assert body["input_rows"] == 3
     assert body["windows_scored"] == 0
     assert body["anomaly_scores"] == []
+    assert body["is_anomaly"] is None
+    assert body["threshold"] is None
+    assert body["threshold_source"] == "not_configured"
     assert body["window_starts"] == []

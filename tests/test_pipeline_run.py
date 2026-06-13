@@ -114,3 +114,49 @@ def test_trigger_source_not_found_lists_tried_paths(client, monkeypatch, tmp_pat
     detail = r.json()["detail"]
     assert "trigger.source not found" in detail
     assert "also tried" in detail
+
+
+def test_train_baseline_then_run_uses_baseline_artifacts(
+    client, tmp_path, shop_floor_tiny_path,
+):
+    """Baseline training should persist artifacts that /pipeline/run can
+    reuse for transform-only preprocessing and deviation reporting."""
+    from pathlib import Path
+
+    import yaml
+
+    real_cfg = yaml.safe_load(
+        (
+            Path(__file__).resolve().parents[1]
+            / "machines" / "inkjet_printer" / "config.yaml"
+        ).read_text(encoding="utf-8")
+    )
+    real_cfg["trigger"]["source"] = str(shop_floor_tiny_path)
+    cfg_dir = tmp_path / "machines" / "inkjet_printer"
+    cfg_dir.mkdir(parents=True)
+    cfg_path = cfg_dir / "config.yaml"
+    cfg_path.write_text(
+        yaml.safe_dump(real_cfg, sort_keys=False),
+        encoding="utf-8",
+    )
+
+    train = client.post(
+        "/pipeline/train_baseline",
+        json={"config_path": str(cfg_path)},
+    )
+    assert train.status_code == 200, train.text
+    trained = train.json()
+    assert trained["status"] == "ok"
+    assert trained["baseline_rows"] == 50
+    assert Path(trained["artifacts"]["preprocessor"]).is_file()
+    assert Path(trained["artifacts"]["stats"]).is_file()
+
+    run = client.post(
+        "/pipeline/run",
+        json={"config_path": str(cfg_path), "persist": False},
+    )
+    assert run.status_code == 200, run.text
+    body = run.json()
+    assert body["impacts"]["preprocessing_source"] == "baseline_preprocessor"
+    assert body["baseline_comparison"]["status"] == "available"
+    assert "features_scaled_on_current_window" not in body["pipeline_warnings"]

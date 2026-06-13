@@ -112,7 +112,7 @@ def test_run_csv_returns_rag_recommendation_when_rag_dir_present(
     )
     monkeypatch.setattr(
         orch, "compose_recommendation",
-        lambda impacts, records: "Mocked operator recommendation.",
+        lambda impacts, records, **kwargs: "Mocked operator recommendation.",
     )
 
     with open(shop_floor_tiny_path, "rb") as f:
@@ -124,6 +124,10 @@ def test_run_csv_returns_rag_recommendation_when_rag_dir_present(
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["operator_recommendation"] == "Mocked operator recommendation."
+    assert body["recommendation_source"] == "gemini"
+    assert body["recommendation_warnings"] == []
+    assert "signal_summary" in body
+    assert "baseline_comparison" in body
     assert len(body["recovery_records"]) == 1
     assert body["recovery_records"][0]["error"] == "Print head clog"
     assert body["recovery_records"][0]["source_doc"] == "Inkjet.docx"
@@ -176,8 +180,67 @@ def test_run_csv_keeps_records_when_llm_fails(
     assert body["recovery_records"][0]["error"] == "Print head clog"
     # Recommendation degrades with an honest, correctly-attributed message.
     assert "LLM composition failed" in body["operator_recommendation"]
+    assert body["recommendation_source"] == "fallback"
+    assert "llm_composition_failed" in body["recommendation_warnings"]
     # Pipelines #1/#2 unaffected.
     assert body["impacts"]["system"] == "inkjet_printer"
+
+
+def test_run_csv_marks_no_records_structurally(
+    client, shop_floor_tiny_path, monkeypatch, tmp_path,
+):
+    """When retrieval runs but finds no matching records, the response
+    should carry a machine-readable no_records source instead of asking
+    the frontend to parse recommendation text."""
+    import pcil.orchestrator as orch
+
+    fake_rag_dir = tmp_path / "RAG"
+    fake_rag_dir.mkdir()
+
+    monkeypatch.setattr(orch, "RAG_DIR", fake_rag_dir)
+    monkeypatch.setattr(orch, "load_all_recovery_docs", lambda _path: [])
+    monkeypatch.setattr(orch, "lookup_keywords", lambda query, records, top_k=3: [])
+
+    with open(shop_floor_tiny_path, "rb") as f:
+        r = client.post(
+            "/pipeline/run_csv",
+            data={"config_path": DEFAULT_CONFIG, "persist": "false"},
+            files={"file": ("shop_floor_tiny.csv", f, "text/csv")},
+        )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["recommendation_source"] == "no_records"
+    assert "no_matching_recovery_records" in body["recommendation_warnings"]
+    assert body["recovery_records"] == []
+
+
+def test_run_csv_marks_retrieval_error_structurally(
+    client, shop_floor_tiny_path, monkeypatch, tmp_path,
+):
+    """Retrieval failures should not be conflated with LLM fallback."""
+    import pcil.orchestrator as orch
+
+    fake_rag_dir = tmp_path / "RAG"
+    fake_rag_dir.mkdir()
+
+    def _lookup_boom(query, records, top_k=3):
+        raise RuntimeError("index broken")
+
+    monkeypatch.setattr(orch, "RAG_DIR", fake_rag_dir)
+    monkeypatch.setattr(orch, "load_all_recovery_docs", lambda _path: [])
+    monkeypatch.setattr(orch, "lookup_keywords", _lookup_boom)
+
+    with open(shop_floor_tiny_path, "rb") as f:
+        r = client.post(
+            "/pipeline/run_csv",
+            data={"config_path": DEFAULT_CONFIG, "persist": "false"},
+            files={"file": ("shop_floor_tiny.csv", f, "text/csv")},
+        )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["recommendation_source"] == "retrieval_error"
+    assert "rag_retrieval_failed" in body["recommendation_warnings"]
+    assert "RAG retrieval failed" in body["operator_recommendation"]
 
 
 def test_run_csv_falls_back_when_rag_dir_missing(
@@ -203,4 +266,6 @@ def test_run_csv_falls_back_when_rag_dir_missing(
     body = r.json()
     assert body["recovery_records"] == []
     assert "RAG document directory not found" in body["operator_recommendation"]
+    assert body["recommendation_source"] == "fallback"
+    assert "rag_directory_missing" in body["recommendation_warnings"]
     assert body["impacts"]["system"] == "inkjet_printer"
