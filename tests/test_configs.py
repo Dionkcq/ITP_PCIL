@@ -1,13 +1,13 @@
 """Tests for the config recipe endpoints (dashboard config editor).
 
-GET  /configs           — list recipes under machines/
+GET  /configs           — list recipes under systems/
 GET  /configs/load      — parse a recipe into structured data
 POST /configs/validate  — dry-run validation, nothing written
 POST /configs/save      — validate + persist (backup on overwrite)
 
 All tests run against a copy of the real inkjet config in a tmp dir
-(`machines_root` fixture monkeypatches MACHINES_ROOT), so they never
-touch the repo's machines/ folder.
+(`machines_root` fixture monkeypatches SYSTEMS_ROOT), so they never
+touch the repo's systems/ folder.
 """
 
 from pathlib import Path
@@ -18,19 +18,19 @@ import yaml
 
 @pytest.fixture
 def machines_root(monkeypatch, tmp_path) -> Path:
-    """A tmp machines/ folder seeded with the real inkjet config."""
+    """A tmp systems/ folder seeded with the real inkjet config."""
     import pcil.orchestrator as orch
 
-    root = tmp_path / "machines"
+    root = tmp_path / "systems"
     machine_dir = root / "inkjet_printer"
     machine_dir.mkdir(parents=True)
 
-    real = Path(__file__).resolve().parents[1] / "machines" / "inkjet_printer" / "config.yaml"
+    real = Path(__file__).resolve().parents[1] / "systems" / "inkjet_printer" / "config.yaml"
     (machine_dir / "config.yaml").write_text(
         real.read_text(encoding="utf-8"), encoding="utf-8"
     )
 
-    monkeypatch.setattr(orch, "MACHINES_ROOT", root)
+    monkeypatch.setattr(orch, "SYSTEMS_ROOT", root)
     return root
 
 
@@ -52,7 +52,7 @@ def test_list_configs(client, machines_root):
     assert configs[0]["machine"] == "inkjet_printer"
     assert configs[0]["recipe"] == "inkjet_printer/config.yaml"
     # The path string usable directly as /pipeline/run's config_path.
-    assert configs[0]["config_path"] == "machines/inkjet_printer/config.yaml"
+    assert configs[0]["config_path"] == "systems/inkjet_printer/config.yaml"
 
 
 def test_load_returns_structured_config(client, machines_root):
@@ -66,7 +66,7 @@ def test_load_returns_structured_config(client, machines_root):
 def test_load_accepts_machines_prefixed_path(client, machines_root):
     """The /pipeline/run-style path spelling works too."""
     r = client.get(
-        "/configs/load", params={"path": "machines/inkjet_printer/config.yaml"}
+        "/configs/load", params={"path": "systems/inkjet_printer/config.yaml"}
     )
     assert r.status_code == 200
 
@@ -237,7 +237,7 @@ def test_save_as_rejects_bad_names(client, machines_root):
 
 
 def test_create_new_machine(client, machines_root):
-    """POST /configs/create makes machines/<machine>/<name>.yaml and the
+    """POST /configs/create makes systems/<machine>/<name>.yaml and the
     new recipe shows up in GET /configs."""
     cfg = _load_payload(client)
     cfg["system"] = "laser_welder"
@@ -250,7 +250,7 @@ def test_create_new_machine(client, machines_root):
     body = r.json()
     assert body["status"] == "ok"
     assert body["recipe"] == "laser_welder/config.yaml"
-    assert body["config_path"] == "machines/laser_welder/config.yaml"
+    assert body["config_path"] == "systems/laser_welder/config.yaml"
 
     new_file = machines_root / "laser_welder" / "config.yaml"
     saved = yaml.safe_load(new_file.read_text(encoding="utf-8"))

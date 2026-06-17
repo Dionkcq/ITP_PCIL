@@ -68,7 +68,7 @@ export default function ConfigTab() {
   const [recipe, setRecipe] = useState('')
   const [form, setForm] = useState(null)
   const [saveAs, setSaveAs] = useState('')
-  const [newMachine, setNewMachine] = useState('')
+  const [newSystem, setNewSystem] = useState('')
   const [newRecipeName, setNewRecipeName] = useState('config')
   const [busy, setBusy] = useState(false)
   // banner: { kind: 'ok' | 'error' | 'warn', title, items }
@@ -155,24 +155,24 @@ export default function ConfigTab() {
     }
   }
 
-  async function handleCreateMachine() {
+  async function handleCreateSystem() {
     setBusy(true)
     setBanner(null)
     try {
       const r = await createConfigRecipe({
-        machine: newMachine,
+        system: newSystem,
         name: newRecipeName,
         config: toConfig(form),
       })
       if (r.status === 'invalid') {
         setBanner({
           kind: 'error',
-          title: 'Validation failed — machine not created',
+          title: 'Validation failed — system not created',
           items: r.errors,
         })
         return
       }
-      setNewMachine('')
+      setNewSystem('')
       setNewRecipeName('config')
       // Refresh + reload FIRST (loadRecipe clears the banner), then set
       // the confirmation last so it stays on screen.
@@ -183,7 +183,7 @@ export default function ConfigTab() {
         title: `Created ${r.recipe} — saved to disk`,
         items: [
           'The previous form was used as the starting recipe — adjust the ' +
-            'source path and schema for the new machine, then Save.',
+            'source path and schema for the new system, then Save.',
           ...r.warnings,
         ],
       })
@@ -229,7 +229,7 @@ export default function ConfigTab() {
 
   async function handleDelete() {
     const ok = window.confirm(
-      `Delete ${recipe}?\n\nThe file is moved to machines/.../.backups/ ` +
+      `Delete ${recipe}?\n\nThe file is moved to systems/.../.backups/ ` +
         'and can be restored from disk — it is not destroyed.',
     )
     if (!ok) return
@@ -246,7 +246,7 @@ export default function ConfigTab() {
       setBanner({
         kind: 'ok',
         title: `Deleted ${r.deleted}`,
-        items: [`Recoverable at machines/${r.backup}`],
+        items: [`Recoverable at systems/${r.backup}`],
       })
     } catch (e) {
       setBanner({ kind: 'error', title: 'Delete failed', items: [e.message] })
@@ -273,10 +273,10 @@ export default function ConfigTab() {
                 loadRecipe(e.target.value)
               }}
             >
-              {[...new Set(recipes.map((c) => c.machine))].map((machine) => (
-                <optgroup key={machine} label={machine}>
+              {[...new Set(recipes.map((c) => c.system))].map((system) => (
+                <optgroup key={system} label={system}>
                   {recipes
-                    .filter((c) => c.machine === machine)
+                    .filter((c) => c.system === system)
                     .map((c) => (
                       <option key={c.recipe} value={c.recipe}>
                         {c.name}
@@ -303,7 +303,7 @@ export default function ConfigTab() {
           </button>
         </div>
         <div className="hint">
-          One machine can hold several recipes for different purposes (use
+          One system can hold several recipes for different purposes (use
           &quot;Save as new&quot; below). Edits are validated server-side before
           anything is written — an invalid recipe is rejected with the reasons
           listed, and every overwrite keeps a timestamped backup. The recipe
@@ -507,7 +507,7 @@ export default function ConfigTab() {
                 Validate only
               </button>
               <label className="field grow">
-                <span>Save as new recipe for this machine (letters, digits, _ or -)</span>
+                <span>Save as new recipe for this system (letters, digits, _ or -)</span>
                 <input
                   value={saveAs}
                   placeholder="e.g. config_test_run2"
@@ -530,14 +530,14 @@ export default function ConfigTab() {
           </section>
 
           <section className="controls-card col cfg-section">
-            <h3>New machine</h3>
+            <h3>New system</h3>
             <div className="row">
               <label className="field">
-                <span>Machine folder name</span>
+                <span>System folder name</span>
                 <input
-                  value={newMachine}
+                  value={newSystem}
                   placeholder="e.g. laser_welder"
-                  onChange={(e) => setNewMachine(e.target.value)}
+                  onChange={(e) => setNewSystem(e.target.value)}
                 />
               </label>
               <label className="field">
@@ -549,14 +549,14 @@ export default function ConfigTab() {
               </label>
               <button
                 className="ghost-btn"
-                onClick={handleCreateMachine}
-                disabled={busy || incomplete || !newMachine.trim()}
+                onClick={handleCreateSystem}
+                disabled={busy || incomplete || !newSystem.trim()}
               >
-                Create machine
+                Create system
               </button>
             </div>
             <div className="hint">
-              Creates <code>machines/&lt;name&gt;/&lt;recipe&gt;.yaml</code> using the
+              Creates <code>systems/&lt;name&gt;/&lt;recipe&gt;.yaml</code> using the
               form above as the starting recipe. The new machine appears in every
               recipe dropdown immediately — point its source at the right CSV and
               adjust the schema, then Save. Existing recipes are never overwritten.

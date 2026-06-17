@@ -39,7 +39,7 @@ services:
       # restarts and apply on the next API call — no rebuild needed. The
       # image carries a baked-in copy as fallback, but mounting is the
       # supported deployment path.
-      - ${PCIL_MACHINES_DIR:-./machines}:/app/machines
+      - ${PCIL_SYSTEMS_DIR:-./systems}:/app/systems
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/', timeout=5)"]

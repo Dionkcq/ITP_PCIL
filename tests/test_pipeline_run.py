@@ -4,7 +4,7 @@ These tests ensure the existing config-driven path still works after
 the refactor that extracted `_run_pipeline_on_df` into a shared helper.
 """
 
-DEFAULT_CONFIG = "machines/inkjet_printer/config.yaml"
+DEFAULT_CONFIG = "systems/inkjet_printer/config.yaml"
 
 
 def test_pipeline_run_with_default_config_returns_impacts(client):
@@ -28,7 +28,7 @@ def test_pipeline_run_missing_config_returns_404(client):
     """A non-existent config path should fail clearly."""
     r = client.post(
         "/pipeline/run",
-        json={"config_path": "machines/no_such_machine/config.yaml"},
+        json={"config_path": "systems/no_such_machine/config.yaml"},
     )
     assert r.status_code == 404
     assert "config.yaml not found" in r.json()["detail"]
@@ -65,12 +65,12 @@ def test_trigger_source_resolves_against_project_root(
     real_cfg = yaml.safe_load(
         (
             Path(__file__).resolve().parents[1]
-            / "machines" / "inkjet_printer" / "config.yaml"
+            / "systems" / "inkjet_printer" / "config.yaml"
         ).read_text(encoding="utf-8")
     )
     assert real_cfg["trigger"]["source"] == "data/mock_shop_floor.csv"
     real_cfg["trigger"]["source"] = "data/slice_tiny.csv"
-    cfg_dir = tmp_path / "machines" / "inkjet_printer"
+    cfg_dir = tmp_path / "systems" / "inkjet_printer"
     cfg_dir.mkdir(parents=True)
     (cfg_dir / "config.yaml").write_text(
         yaml.safe_dump(real_cfg, sort_keys=False), encoding="utf-8"
@@ -96,7 +96,7 @@ def test_trigger_source_not_found_lists_tried_paths(client, monkeypatch, tmp_pat
     real_cfg = yaml.safe_load(
         (
             Path(__file__).resolve().parents[1]
-            / "machines" / "inkjet_printer" / "config.yaml"
+            / "systems" / "inkjet_printer" / "config.yaml"
         ).read_text(encoding="utf-8")
     )
     real_cfg["trigger"]["source"] = "data/definitely_missing.csv"

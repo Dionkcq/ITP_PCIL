@@ -4,7 +4,7 @@ import { DiagnosisResult } from '../components.jsx'
 
 // Fallback while /configs hasn't answered (or on older orchestrators).
 const CONFIGS = [
-  { label: 'Inkjet Printer', value: 'machines/inkjet_printer/config.yaml' },
+  { label: 'Inkjet Printer', value: 'systems/inkjet_printer/config.yaml' },
 ]
 
 export default function DiagnosisTab() {
@@ -19,7 +19,7 @@ export default function DiagnosisTab() {
         if (r.configs?.length) {
           setConfigs(
             r.configs.map((c) => ({
-              label: `${c.machine} — ${c.name}`,
+              label: `${c.system ?? c.machine} — ${c.name}`,
               value: c.config_path,
             })),
           )
@@ -108,7 +108,7 @@ export default function DiagnosisTab() {
         </div>
 
         <label className="field">
-          <span>Machine / recipe</span>
+          <span>System / recipe</span>
           <select value={config} onChange={(e) => setConfig(e.target.value)}>
             {configs.map((c) => (
               <option key={c.value} value={c.value}>{c.label}</option>

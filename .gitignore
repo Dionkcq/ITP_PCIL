@@ -37,17 +37,17 @@ pcil/rag/data/
 
 # Per-run save_csv API outputs (generated on demand by /pipeline/save_csv;
 # not deliverables themselves — the deliverable is the API).
-machines/*/output/context_window_*.csv
+systems/*/output/context_window_*.csv
 
 # Timestamped pre-save backups written by the dashboard config editor.
-machines/*/.backups/
+systems/*/.backups/
 
 # Triggered slice CSVs (orchestrator dev artifact).
 triggered_slices/
 
 # Notes
-# - machines/*/output/ IS still tracked on purpose for golden_dataframe.csv,
+# - systems/*/output/ IS still tracked on purpose for golden_dataframe.csv,
 #   context_model.pkl, context_model_impacts.json, preprocessor.pkl,
 #   sample_shop_floor_slice.csv — those are real deliverables for review.
 # - If output gets too large later, add the line below to ignore CSVs:
-#     # machines/*/output/*.csv
+#     # systems/*/output/*.csv

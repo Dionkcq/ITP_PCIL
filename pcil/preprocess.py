@@ -51,8 +51,8 @@ def resolve_config_path(arg: str | None = None) -> Path:
         p = Path(arg)
         if p.is_file():
             return p.resolve()
-        return repo_root / "machines" / arg / "config.yaml"
-    return repo_root / "machines" / "inkjet_printer" / "config.yaml"
+        return repo_root / "systems" / arg / "config.yaml"
+    return repo_root / "systems" / "inkjet_printer" / "config.yaml"
 
 
 def load_config(config_path: Path) -> dict:
@@ -205,8 +205,8 @@ def main():
     )
     parser.add_argument(
         "--config", default=None,
-        help="Path to config.yaml or a machine name. "
-             "Defaults to machines/inkjet_printer/config.yaml.",
+        help="Path to config.yaml or a system name. "
+             "Defaults to systems/inkjet_printer/config.yaml.",
     )
     parser.add_argument(
         "--save-pipeline", action="store_true",

@@ -4,7 +4,7 @@ build_mock_shop_floor.py
 
 Generate `data/mock_shop_floor.csv` — a synthetic shop-floor DataFrame that
 matches the schema Pipeline #1's `preprocess.py` expects (see
-`machines/inkjet_printer/config.yaml`).
+`systems/inkjet_printer/config.yaml`).
 
 Why this exists
 ---------------

@@ -23,6 +23,7 @@ def compose_recommendation(
     records: list["RecoveryRecord"],
     *,
     model: str = "gemini-2.5-flash",
+    target_summary: dict[str, float] | None = None,
 ) -> str:
     """Generate a plain-English operator recommendation.
 
@@ -33,21 +34,37 @@ def compose_recommendation(
         Must use the current schema: top-level "context" key with
         "ranked_feature_impacts" lists (not the legacy "blocks" schema).
     records:
-        Recovery records retrieved by lookup_keywords(). May be empty.
+        Recovery records retrieved by lookup_keywords(). Must be non-empty
+        (the orchestrator handles the empty case before calling this).
     model:
         Gemini model name. Defaults to "gemini-2.5-flash".
+    target_summary:
+        Measured window-mean of each target (0-1). When provided, the worst
+        targets are chosen by these real values and the values are shown to
+        the model, so the recommendation is grounded in measured performance
+        rather than the regression intercept.
 
     Returns
     -------
     str
-        One concise paragraph for the operator, or a fallback string
-        if records are empty or the API call fails.
+        One concise paragraph for the operator.
+
+    Raises
+    ------
+    ValueError
+        If `records` is empty.
+    RuntimeError
+        If GEMINI_API_KEY is unset, the API call fails, or the model returns
+        an empty response. The orchestrator catches these and degrades to a
+        records-only response tagged recommendation_status="llm_unavailable",
+        keeping failures distinguishable from real recommendations.
     """
     if not records:
-        return (
-            "No matching recovery records found. "
-            "Review the feature impacts data manually."
-        )
+        # The orchestrator short-circuits the no-records case (and tags it
+        # recommendation_status="no_records"); this guard is for any direct
+        # caller. Raise rather than return a string so "no recommendation"
+        # is never mistaken for a real one.
+        raise ValueError("no recovery records to compose from")
 
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
@@ -56,51 +73,68 @@ def compose_recommendation(
             "Set it before starting the orchestrator."
         )
 
-    prompt = _build_prompt(impacts, records)
+    prompt = _build_prompt(impacts, records, target_summary=target_summary)
 
-    try:
-        from google import genai  # noqa: PLC0415
+    # No try/except here: failures (missing key, no internet, timeout,
+    # empty/safety-filtered response) propagate so the orchestrator can
+    # degrade with a machine-readable recommendation_status instead of the
+    # caller having to sniff the returned text for marker words.
+    from google import genai  # noqa: PLC0415
 
-        client = genai.Client(
-            api_key=api_key,
-            http_options={"timeout": _LLM_TIMEOUT_MS},
+    client = genai.Client(
+        api_key=api_key,
+        http_options={"timeout": _LLM_TIMEOUT_MS},
+    )
+    response = client.models.generate_content(model=model, contents=prompt)
+    if not response.text:
+        raise RuntimeError(
+            "Gemini returned an empty response (possibly safety-filtered)."
         )
-        response = client.models.generate_content(model=model, contents=prompt)
-        if not response.text:
-            # Safety-filtered or empty response — degrade like an API error.
-            return (
-                "LLM returned an empty response. "
-                "Review the recovery records below manually."
-            )
-        return response.text.strip()
-    except Exception as exc:  # noqa: BLE001
-        return (
-            f"LLM composition failed ({type(exc).__name__}): {exc}. "
-            "Review the recovery records below manually."
-        )
+    return response.text.strip()
 
 
-def _build_prompt(impacts: dict, records: list["RecoveryRecord"]) -> str:
+def _build_prompt(
+    impacts: dict,
+    records: list["RecoveryRecord"],
+    target_summary: dict[str, float] | None = None,
+) -> str:
     """Construct the Gemini prompt from impacts and retrieved records.
 
-    Keeps total length under ~1 800 characters by truncating long
+    Worst-performing targets are chosen by their actual window-mean value
+    (`target_summary`) when available - the real "how is this window doing"
+    signal - instead of the regression intercept, which is only the predicted
+    value when all scaled features are 0 and does not reflect current
+    performance. The prompt feeds those measured values to the model and
+    forbids inventing numbers it was not given, so it cannot fabricate
+    severity. Total length is kept under ~1 800 characters by truncating long
     recovery texts.
     """
     system_name = impacts.get("system", "unknown system")
-
-    # Identify the two worst-performing targets by lowest intercept.
-    # In this linear model the intercept is the baseline predicted value
-    # when all normalised features are 0 - a lower intercept indicates
-    # a weaker performance baseline for that target.
     context_blocks = impacts.get("context", [])
-    sorted_blocks = sorted(context_blocks, key=lambda b: b["intercept"])
-    worst_two = sorted_blocks[:2]
-    target_lines = "\n".join(
-        f"  - {b['target']} (baseline: {b['intercept']:.3f})"
-        for b in worst_two
-    )
 
-    # Collect top-ranked feature impact descriptions (deduplicated).
+    # --- Worst-performing targets -----------------------------------
+    if target_summary:
+        worst_two = sorted(
+            context_blocks,
+            key=lambda b: target_summary.get(b["target"], float("inf")),
+        )[:2]
+        target_lines = "\n".join(
+            f"  - {b['target']}: {target_summary.get(b['target'], float('nan')):.3f}"
+            for b in worst_two
+        )
+        targets_header = (
+            "Worst-performing targets this window (measured 0-1, lower = worse)"
+        )
+    else:
+        # Defensive fallback: the orchestrator normally passes target_summary.
+        worst_two = sorted(context_blocks, key=lambda b: b["intercept"])[:2]
+        target_lines = "\n".join(
+            f"  - {b['target']} (baseline {b['intercept']:.3f})"
+            for b in worst_two
+        )
+        targets_header = "Worst-performing targets (by regression baseline)"
+
+    # --- Top contributing features (deduplicated) -------------------
     seen: set[str] = set()
     impact_lines: list[str] = []
     for block in context_blocks:
@@ -110,14 +144,14 @@ def _build_prompt(impacts: dict, records: list["RecoveryRecord"]) -> str:
                 seen.add(feat)
                 desc = fi.get("description") or feat.replace("_", " ")
                 impact_lines.append(
-                    f"  - {feat} (score {fi['raw_impact_score']:+.3f}): {desc}"
+                    f"  - {feat} (impact {fi['raw_impact_score']:+.3f}): {desc}"
                 )
             if len(impact_lines) >= 3:
                 break
         if len(impact_lines) >= 3:
             break
 
-    # Format recovery records; truncate long recovery text.
+    # --- Recovery records (truncate long recovery text) -------------
     record_blocks: list[str] = []
     for i, rec in enumerate(records, 1):
         recovery_text = rec["recovery"]
@@ -135,12 +169,17 @@ def _build_prompt(impacts: dict, records: list["RecoveryRecord"]) -> str:
 
     return (
         f"Machine: {system_name}\n\n"
-        f"Worst-performing targets:\n{target_lines}\n\n"
-        f"Top contributing features:\n{impacts_text}\n\n"
-        f"Relevant recovery records:\n{records_text}\n\n"
-        "Task: Write one concise paragraph (3-5 sentences) for a factory "
-        "floor operator. State what the data suggests is wrong, which "
-        "physical component to inspect first, and the most important "
-        "recovery step from the records above. Use plain language; avoid "
-        "technical jargon or variable names."
+        f"{targets_header}:\n{target_lines}\n\n"
+        f"Features most associated with the result "
+        f"(model impact scores, not raw sensor readings):\n{impacts_text}\n\n"
+        f"Relevant recovery records from the maintenance documents:\n"
+        f"{records_text}\n\n"
+        "Task: Using ONLY the information above, write a short paragraph "
+        "(2-4 sentences) for a factory-floor operator. Recommend which "
+        "recovery step from the records to try first and which component to "
+        "inspect, and refer to the worst-performing target(s) by name. Do "
+        "NOT invent sensor readings, numeric thresholds, severity levels, or "
+        "causes that are not stated above; if the records only partially "
+        "match, say the match is approximate. Use plain language and avoid "
+        "variable names."
     )

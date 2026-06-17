@@ -54,7 +54,7 @@ RUN pip install --no-cache-dir torch==2.12.0 --index-url https://download.pytorc
 
 # Application code.
 COPY pcil/ ./pcil/
-COPY machines/ ./machines/
+COPY systems/ ./systems/
 
 # Built dashboard from stage 1. FastAPI mounts this directory at
 # /dashboard via attach_dashboard(); the operator opens

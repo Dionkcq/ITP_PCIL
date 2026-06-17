@@ -23,7 +23,7 @@ rank within the target.
 
 Run from PCIL_dev/:
     python -m pcil.train_context_model                # default: inkjet_printer
-    python -m pcil.train_context_model oil_filler     # by machine name
+    python -m pcil.train_context_model oil_filler     # by system name
 """
 
 from __future__ import annotations
@@ -146,28 +146,28 @@ def save_artifacts(
 # CLI wrapper
 # ─────────────────────────────────────────────────────────────
 
-def _resolve_machine(arg: str | None) -> Path:
+def _resolve_system(arg: str | None) -> Path:
     repo_root = Path(__file__).resolve().parent.parent  # PCIL_dev/
     if arg:
         p = Path(arg)
         if p.is_file():
             return p.resolve()
-        return repo_root / "machines" / arg / "config.yaml"
-    return repo_root / "machines" / "inkjet_printer" / "config.yaml"
+        return repo_root / "systems" / arg / "config.yaml"
+    return repo_root / "systems" / "inkjet_printer" / "config.yaml"
 
 
 def main():
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
     arg = sys.argv[1] if len(sys.argv) > 1 else None
-    cfg_path = _resolve_machine(arg)
+    cfg_path = _resolve_system(arg)
     if not cfg_path.is_file():
         print(f"Config not found: {cfg_path}")
         raise SystemExit(1)
 
     cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
-    machine_dir = cfg_path.parent
-    output_dir = (machine_dir / cfg["pipeline"]["output_dir"]).resolve()
+    system_dir = cfg_path.parent
+    output_dir = (system_dir / cfg["pipeline"]["output_dir"]).resolve()
 
     csv_path = output_dir / "golden_dataframe.csv"
     if not csv_path.exists():

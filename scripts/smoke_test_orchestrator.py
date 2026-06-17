@@ -23,7 +23,7 @@ from fastapi.testclient import TestClient
 
 from pcil.orchestrator import app
 
-CONFIG_PATH = "machines/inkjet_printer/config.yaml"
+CONFIG_PATH = "systems/inkjet_printer/config.yaml"
 
 
 def banner(text: str) -> None:

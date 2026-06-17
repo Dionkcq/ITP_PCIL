@@ -45,7 +45,7 @@ Orchestrator** (`pcil/orchestrator.py`). It exposes endpoints for:
   `/configs/create`, `/configs/delete`) — the dashboard's Config tab is
   built on these; saves are validated server-side and backed up, deletes
   are recoverable (moved to `.backups/`), so the YAML can't be corrupted
-  or lost from the UI, and new machines can be onboarded without
+  or lost from the UI, and new systems can be onboarded without
   touching the repo.
 
 Anomaly detection is split into three specialist subpackages —
@@ -246,7 +246,7 @@ upload.
 
 ```bash
 curl -X POST http://localhost:8000/pipeline/run_csv \
-     -F "config_path=machines/inkjet_printer/config.yaml" \
+     -F "config_path=systems/inkjet_printer/config.yaml" \
      -F "persist=false" \
      -F "file=@shop_floor.csv"
 ```
@@ -290,7 +290,7 @@ PCIL_dev/
 │       └── irregular/               # event-log / on-change-sensor pipeline
 │           ├── slice.py, features.py, model.py, train.py, score.py
 │           └── README.md            # design rationale + tuning notes
-├── machines/inkjet_printer/         # one folder per machine
+├── systems/inkjet_printer/         # one folder per system
 │   ├── config.yaml                  # recipe — trigger, schema, feature descriptions
 │   └── output/                      # generated golden DF / impacts JSON / .pkl
 ├── scripts/

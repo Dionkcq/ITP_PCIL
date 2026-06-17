@@ -81,8 +81,14 @@ export function KpiCards({ summary }) {
 // ── Operator recommendation ────────────────────────────────────────
 const FALLBACK_HINTS = ['not found', 'failed', 'not set', 'No matching recovery']
 
-export function Recommendation({ text }) {
-  const isFallback = FALLBACK_HINTS.some((h) => (text || '').includes(h))
+export function Recommendation({ text, status }) {
+  // Prefer the structured status from the API. The legacy string sniff is
+  // kept only for archived/exported runs saved before recommendation_status
+  // existed (status is undefined for those).
+  const isFallback =
+    status != null
+      ? status !== 'ok'
+      : FALLBACK_HINTS.some((h) => (text || '').includes(h))
   return (
     <section className={`reco ${isFallback ? 'reco-fallback' : ''}`}>
       <h2>Recommendation</h2>
@@ -179,7 +185,7 @@ export function DiagnosisResult({ data }) {
     <>
       <MetaBar data={data} />
       <KpiCards summary={data.target_summary} />
-      <Recommendation text={data.operator_recommendation} />
+      <Recommendation text={data.operator_recommendation} status={data.recommendation_status} />
       <ImpactBars impacts={data.impacts} />
       <EvidenceList records={data.recovery_records} />
     </>

@@ -48,7 +48,7 @@ import yaml
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 from pcil.adapter import adapt, column_names_from_config
 from pcil.preprocess import load_config, preprocess
@@ -150,7 +150,7 @@ class RunPipelineRequest(BaseModel):
             "Path to a config.yaml recipe. Relative paths resolve from "
             "the orchestrator's working directory (typically PCIL_dev/)."
         ),
-        examples=["machines/inkjet_printer/config.yaml"],
+        examples=["systems/inkjet_printer/config.yaml"],
     )
     persist: bool = Field(
         False,
@@ -163,7 +163,7 @@ class RunPipelineRequest(BaseModel):
 
 
 class SaveCsvRequest(BaseModel):
-    config_path: str = Field(..., examples=["machines/inkjet_printer/config.yaml"])
+    config_path: str = Field(..., examples=["systems/inkjet_printer/config.yaml"])
 
 
 class AnomalyScoreRequest(BaseModel):
@@ -190,6 +190,12 @@ class AnomalyScoreRequest(BaseModel):
 
 def _resolve_config(config_path: str) -> tuple[Path, dict]:
     """Resolve + load a config.yaml. Raises HTTPException on failure."""
+    # Back-compat: the recipe folder was renamed machines/ -> systems/.
+    # Accept the old "machines/..." spelling so paths hard-coded before the
+    # rename still resolve.
+    norm = config_path.replace("\\", "/")
+    if norm.startswith("machines/"):
+        config_path = "systems/" + norm[len("machines/"):]
     p = Path(config_path).expanduser()
     if not p.is_absolute():
         p = (Path.cwd() / p).resolve()
@@ -340,11 +346,25 @@ def _run_pipeline_on_df(
         )
         artifact_paths = {"impacts_json": str(json_path), "model_pkl": str(pkl_path)}
 
+    # Window-level mean of each target (the real "how is this window doing"
+    # signal). Powers the dashboard KPI cards AND is fed to the RAG composer
+    # so the recommendation is grounded in measured performance instead of
+    # the regression intercept.
+    target_summary = {
+        t: float(golden_df[t].mean())
+        for t in targets
+        if t in golden_df.columns
+    }
+
     # --- RAG retrieval + LLM composition ---------------------------
-    # Retrieval and composition are guarded separately: retrieval is
-    # fully local (DOCX files on disk), composition needs the Gemini
-    # API. If only composition fails (no key, no internet, timeout),
-    # the operator still gets the retrieved recovery records.
+    # Retrieval and composition are guarded separately: retrieval is fully
+    # local (DOCX files on disk), composition needs the Gemini API. If only
+    # composition fails (no key, no internet, timeout), the operator still
+    # gets the retrieved recovery records.
+    #
+    # recommendation_status makes the outcome machine-readable so neither the
+    # caller nor the dashboard has to sniff the text for marker words:
+    #   ok | no_records | retrieval_failed | llm_unavailable | rag_unavailable
     if RAG_DIR.is_dir():
         try:
             rag_query = _build_rag_query(impacts)
@@ -352,35 +372,40 @@ def _run_pipeline_on_df(
             recovery_records = lookup_keywords(rag_query, all_records, top_k=3)
         except Exception as exc:  # noqa: BLE001
             recovery_records = []
+            recommendation_status = "retrieval_failed"
             operator_recommendation = (
                 f"RAG retrieval failed ({type(exc).__name__}): {exc}. "
                 "Review the impacts data manually."
             )
         else:
-            try:
-                operator_recommendation = compose_recommendation(
-                    impacts, recovery_records,
-                )
-            except Exception as exc:  # noqa: BLE001
+            if not recovery_records:
+                recommendation_status = "no_records"
                 operator_recommendation = (
-                    f"LLM composition failed ({type(exc).__name__}): {exc}. "
-                    "Review the recovery records below manually."
+                    "No matching recovery records found. "
+                    "Review the feature impacts data manually."
                 )
+            else:
+                try:
+                    operator_recommendation = compose_recommendation(
+                        impacts, recovery_records,
+                        target_summary=target_summary,
+                    )
+                    recommendation_status = "ok"
+                except Exception as exc:  # noqa: BLE001
+                    recommendation_status = "llm_unavailable"
+                    operator_recommendation = (
+                        f"LLM composition failed ({type(exc).__name__}): {exc}. "
+                        "Review the recovery records below manually."
+                    )
     else:
         recovery_records = []
+        recommendation_status = "rag_unavailable"
         operator_recommendation = (
             "RAG document directory not found. "
             f"Expected: {RAG_DIR}. "
             "Mount the data/RAG/ folder and restart the orchestrator."
         )
     # ---------------------------------------------------------------
-
-    # Window-level mean of each target, for the dashboard KPI cards.
-    target_summary = {
-        t: float(golden_df[t].mean())
-        for t in targets
-        if t in golden_df.columns
-    }
 
     return {
         "status": "ok",
@@ -390,6 +415,7 @@ def _run_pipeline_on_df(
         "target_summary": target_summary,
         "recovery_records": recovery_records,
         "operator_recommendation": operator_recommendation,
+        "recommendation_status": recommendation_status,
         "artifacts": artifact_paths,
     }
 
@@ -411,6 +437,13 @@ def _build_rag_query(impacts: dict) -> str:
     Extracts vocabulary from feature descriptions so that tokens match
     human-readable DOCX error text. Falls back to splitting the column name
     on underscores when no description is available.
+
+    Note: the FEATURES queried are the live top-ranked impacts for this
+    window, so retrieval follows what actually moved the window. The query
+    VOCABULARY, however, is the static feature-description text from
+    config.yaml, not the live sensor magnitudes - so lexical TF-IDF matching
+    can be vocabulary-adjacent. Semantic-embedding retrieval (contained to
+    lookup.py) is the planned upgrade; see deliverables/Week7.
     """
     tokens: set[str] = set()
     for block in impacts.get("context", []):
@@ -485,7 +518,7 @@ async def run_pipeline_csv(
         description="Shop-floor CSV slice. Same schema config.yaml expects.",
     ),
     config_path: str = Form(
-        "machines/inkjet_printer/config.yaml",
+        "systems/inkjet_printer/config.yaml",
         description="Config recipe path — relative to orchestrator's CWD.",
     ),
     persist: bool = Form(
@@ -542,14 +575,14 @@ def save_csv(req: SaveCsvRequest) -> dict:
 # never raw YAML. The server parses, validates, and re-serialises with
 # yaml.safe_dump, so a bad submission is rejected with a list of errors
 # instead of ever producing a corrupt file. Every overwrite stores a
-# timestamped backup under machines/<machine>/.backups/.
+# timestamped backup under systems/<system>/.backups/.
 # ─────────────────────────────────────────────────────────────
 
-# Root folder of per-machine recipes. CWD-relative to match how
-# config_path strings resolve everywhere else (dev: PCIL_dev/machines,
-# Docker: /app/machines). Mount the folder from the host in deployment
+# Root folder of per-system recipes. CWD-relative to match how
+# config_path strings resolve everywhere else (dev: PCIL_dev/systems,
+# Docker: /app/systems). Mount the folder from the host in deployment
 # (docker-compose does) so dashboard edits survive container recreation.
-MACHINES_ROOT = (Path.cwd() / "machines").resolve()
+SYSTEMS_ROOT = (Path.cwd() / "systems").resolve()
 
 _RECIPE_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_\-]{0,63}")
 
@@ -563,7 +596,7 @@ _EDITABLE_SECTIONS = (
 class SaveConfigRequest(BaseModel):
     path: str = Field(
         ...,
-        description="Recipe to edit, relative to machines/ — e.g. 'inkjet_printer/config.yaml'.",
+        description="Recipe to edit, relative to systems/ — e.g. 'inkjet_printer/config.yaml'.",
         examples=["inkjet_printer/config.yaml"],
     )
     config: dict = Field(
@@ -580,31 +613,33 @@ class SaveConfigRequest(BaseModel):
 
 
 def _safe_recipe_path(recipe: str, *, must_exist: bool = True) -> Path:
-    """Resolve a recipe reference and confine it to MACHINES_ROOT.
+    """Resolve a recipe reference and confine it to SYSTEMS_ROOT.
 
     Accepts 'inkjet_printer/config.yaml' or the run-endpoint style
-    'machines/inkjet_printer/config.yaml'. Rejects absolute paths,
+    'systems/inkjet_printer/config.yaml'. Rejects absolute paths,
     traversal ('..') and non-YAML suffixes so the editor endpoints can
-    never read or write outside the machines folder.
+    never read or write outside the systems folder.
     """
     rel = Path(recipe)
     if rel.is_absolute():
         raise HTTPException(
             status_code=400,
-            detail="config path must be relative to the machines/ folder",
+            detail="config path must be relative to the systems/ folder",
         )
-    if rel.parts and rel.parts[0] == "machines":
+    # Accept the new "systems/..." spelling and the pre-rename "machines/..."
+    # alias so older recipe references keep working.
+    if rel.parts and rel.parts[0] in ("systems", "machines"):
         rel = Path(*rel.parts[1:])
     if rel.suffix.lower() not in (".yaml", ".yml"):
         raise HTTPException(status_code=400, detail="config path must end in .yaml")
 
-    p = (MACHINES_ROOT / rel).resolve()
+    p = (SYSTEMS_ROOT / rel).resolve()
     try:
-        p.relative_to(MACHINES_ROOT)
+        p.relative_to(SYSTEMS_ROOT)
     except ValueError:
         raise HTTPException(
             status_code=400,
-            detail="config path must stay inside the machines/ folder",
+            detail="config path must stay inside the systems/ folder",
         ) from None
     if must_exist and not p.is_file():
         raise HTTPException(status_code=404, detail=f"config not found: {recipe}")
@@ -807,18 +842,20 @@ def _validate_recipe(cfg: Any) -> tuple[list[str], list[str]]:
 
 @app.get("/configs", tags=["config"])
 def list_configs() -> dict:
-    """List the config recipes available under machines/."""
+    """List the config recipes available under systems/."""
     configs = []
-    if MACHINES_ROOT.is_dir():
-        for p in sorted(MACHINES_ROOT.glob("*/*.y*ml")):
+    if SYSTEMS_ROOT.is_dir():
+        for p in sorted(SYSTEMS_ROOT.glob("*/*.y*ml")):
             if not p.is_file():
                 continue
             configs.append({
+                "system": p.parent.name,
+                # "machine" kept as a back-compat alias for the pre-rename field.
                 "machine": p.parent.name,
                 "name": p.name,
                 "recipe": f"{p.parent.name}/{p.name}",
                 # The string /pipeline/run and /pipeline/run_csv accept.
-                "config_path": f"machines/{p.parent.name}/{p.name}",
+                "config_path": f"systems/{p.parent.name}/{p.name}",
             })
     return {"configs": configs}
 
@@ -839,7 +876,7 @@ def load_config_recipe(path: str) -> dict:
         )
     return {
         "recipe": f"{p.parent.name}/{p.name}",
-        "config_path": f"machines/{p.parent.name}/{p.name}",
+        "config_path": f"systems/{p.parent.name}/{p.name}",
         "config": cfg,
     }
 
@@ -863,7 +900,7 @@ def save_config_recipe(req: SaveConfigRequest) -> dict:
     Returns status='invalid' with the error list when validation fails
     (nothing is written). On success the YAML is regenerated with
     yaml.safe_dump — user input is never spliced into the file as text —
-    and the previous version is backed up to machines/<m>/.backups/.
+    and the previous version is backed up to systems/<m>/.backups/.
     """
     src = _safe_recipe_path(req.path)
     cfg = _normalize_recipe(req.config)
@@ -920,16 +957,18 @@ def save_config_recipe(req: SaveConfigRequest) -> dict:
     return {
         "status": "ok",
         "recipe": f"{dest.parent.name}/{dest.name}",
-        "config_path": f"machines/{dest.parent.name}/{dest.name}",
+        "config_path": f"systems/{dest.parent.name}/{dest.name}",
         "backup": backup_name,
         "warnings": warnings,
     }
 
 
 class CreateConfigRequest(BaseModel):
-    machine: str = Field(
+    # Accept both "system" (new) and "machine" (pre-rename alias) on input.
+    system: str = Field(
         ...,
-        description="New machine folder name (letters, digits, '_', '-').",
+        validation_alias=AliasChoices("system", "machine"),
+        description="New system folder name (letters, digits, '_', '-').",
         examples=["laser_welder"],
     )
     name: str = Field(
@@ -944,19 +983,19 @@ class CreateConfigRequest(BaseModel):
 
 @app.post("/configs/create", tags=["config"])
 def create_config_recipe(req: CreateConfigRequest) -> dict:
-    """Create a brand-new machine folder + recipe from the dashboard.
+    """Create a brand-new system folder + recipe from the dashboard.
 
     Same validation as /configs/save; refuses to overwrite an existing
-    recipe (use /configs/save for edits). The machine's output/ folder
+    recipe (use /configs/save for edits). The system's output/ folder
     is created automatically on the first pipeline run.
     """
-    machine = req.machine.strip()
+    system = req.system.strip()
     name = req.name.strip().removesuffix(".yaml").removesuffix(".yml") or "config"
-    if not _RECIPE_NAME_RE.fullmatch(machine):
+    if not _RECIPE_NAME_RE.fullmatch(system):
         raise HTTPException(
             status_code=400,
             detail=(
-                "machine must be 1-64 characters: letters, digits, '_' or '-' "
+                "system must be 1-64 characters: letters, digits, '_' or '-' "
                 "(no slashes, dots or spaces)"
             ),
         )
@@ -971,12 +1010,12 @@ def create_config_recipe(req: CreateConfigRequest) -> dict:
     if errors:
         return {"status": "invalid", "errors": errors, "warnings": warnings}
 
-    dest = MACHINES_ROOT / machine / f"{name}.yaml"
+    dest = SYSTEMS_ROOT / system / f"{name}.yaml"
     if dest.is_file():
         raise HTTPException(
             status_code=409,
             detail=(
-                f"recipe {machine}/{name}.yaml already exists — "
+                f"recipe {system}/{name}.yaml already exists — "
                 "edit it via /configs/save instead"
             ),
         )
@@ -994,8 +1033,8 @@ def create_config_recipe(req: CreateConfigRequest) -> dict:
 
     return {
         "status": "ok",
-        "recipe": f"{machine}/{name}.yaml",
-        "config_path": f"machines/{machine}/{name}.yaml",
+        "recipe": f"{system}/{name}.yaml",
+        "config_path": f"systems/{system}/{name}.yaml",
         "warnings": warnings,
     }
 
@@ -1011,9 +1050,9 @@ class DeleteConfigRequest(BaseModel):
 def delete_config_recipe(req: DeleteConfigRequest) -> dict:
     """Delete a recipe — recoverably.
 
-    The file is MOVED to machines/<machine>/.backups/<name>.deleted-<stamp>.yaml
+    The file is MOVED to systems/<system>/.backups/<name>.deleted-<stamp>.yaml
     rather than destroyed, so a wrong click can be undone from disk. A
-    machine whose last recipe is deleted simply disappears from /configs;
+    system whose last recipe is deleted simply disappears from /configs;
     its folder (with backups and outputs) stays on disk.
     """
     p = _safe_recipe_path(req.path)
