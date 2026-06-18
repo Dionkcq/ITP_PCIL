@@ -57,6 +57,66 @@ writes the returned score into the shop-floor database themselves.
 
 ---
 
+## Architecture (C4)
+
+PCIL is documented with the [C4 model](https://c4model.com). The **system context**
+and **container** views are below; the **component** view and the **runtime data-flow**
+(the contract handed between pipeline stages) are in
+[`ARCHITECTURE.md`](ARCHITECTURE.md).
+
+> These diagrams reflect the current `main` branch: a CSV/file data source and a single
+> orchestrator container. The planned PostgreSQL source and the pipeline/anomaly
+> container split are tracked in
+> [`ARCHITECTURE.md`](ARCHITECTURE.md#roadmap-not-yet-on-main).
+
+### Level 1 - System context
+
+```mermaid
+C4Context
+    title System context - PCIL
+
+    Person(operator, "Factory operator / engineer", "Runs diagnoses, uploads CSVs, trains and scores anomaly models")
+    System(pcil, "PCIL", "Production Context Intelligence Layer: turns a shop-floor data window into an operator-facing diagnosis and recovery advice")
+    System_Ext(gemini, "Google Gemini API", "LLM (gemini-2.5-flash) that writes the operator recommendation")
+    System_Ext(shop, "Shop-floor data source", "Engineer-owned. On main: a CSV slice in the data folder. PostgreSQL planned on a separate branch")
+    System_Ext(docs, "Maintenance documents", "DOCX error / cause / recovery references used by RAG retrieval")
+
+    Rel(operator, pcil, "Views diagnosis + recommendation; uploads CSV; trains/scores anomalies", "HTTPS / browser")
+    Rel(pcil, shop, "Pulls a time-window slice", "CSV read")
+    Rel(pcil, docs, "Retrieves recovery records", "file read + TF-IDF")
+    Rel(pcil, gemini, "Composes the recommendation", "HTTPS")
+
+    UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="1")
+```
+
+### Level 2 - Containers
+
+```mermaid
+C4Container
+    title Container diagram - PCIL (current main branch)
+
+    Person(operator, "Factory operator / engineer", "Uses the dashboard in a browser")
+    System_Ext(gemini, "Google Gemini API", "LLM (gemini-2.5-flash)")
+
+    Container_Boundary(pcil, "PCIL") {
+        Container(spa, "Operator dashboard", "React 18 + Vite (SPA)", "KPI rings, anomaly chart, ranked impacts, LLM recommendation, config editor; parses CSVs client-side; runs in the browser")
+        Container(orch, "PCIL Job Orchestrator", "Python 3.13, FastAPI, uvicorn", "One service: pipeline (preprocess, context model, RAG), anomaly train/score, config-recipe CRUD; also serves the dashboard")
+        ContainerDb(recipes, "Config recipes", "YAML files (systems/)", "Per-system trigger + input schema + feature descriptions")
+        ContainerDb(rtdata, "Runtime data", "Files (data/)", "Shop-floor CSV slice, RAG .docx, .pkl anomaly bundles")
+    }
+
+    Rel(operator, spa, "Uses", "HTTPS")
+    Rel(spa, orch, "Calls /pipeline, /anomaly, /configs", "JSON over HTTP (same origin)")
+    Rel(orch, spa, "Serves the built SPA at /dashboard", "static files")
+    Rel(orch, recipes, "Reads + writes recipes (validated, backed up)", "PyYAML")
+    Rel(orch, rtdata, "Reads slice / docs / bundles; writes optional CSV", "pandas, joblib, python-docx")
+    Rel(orch, gemini, "Composes recommendation", "HTTPS (google-genai)")
+
+    UpdateLayoutConfig($c4ShapeInRow="2", $c4BoundaryInRow="1")
+```
+
+---
+
 ## Quickstart
 
 ```powershell
