@@ -101,8 +101,8 @@ C4Container
     Container_Boundary(pcil, "PCIL") {
         Container(spa, "Operator dashboard", "React 18 + Vite (SPA)", "KPI rings, anomaly chart, ranked impacts, LLM recommendation, config editor; parses CSVs client-side; runs in the browser")
         Container(orch, "PCIL Job Orchestrator", "Python 3.13, FastAPI, uvicorn", "One service: pipeline (preprocess, context model, RAG), anomaly train/score, config-recipe CRUD; also serves the dashboard")
-        ContainerDb(recipes, "Config recipes", "YAML files (systems/)", "Per-system trigger + input schema + feature descriptions")
-        ContainerDb(rtdata, "Runtime data", "Files (data/)", "Shop-floor CSV slice, RAG .docx, .pkl anomaly bundles")
+        Container(recipes, "Config recipes", "YAML files (mounted ./systems)", "Per-system trigger + input schema + feature descriptions")
+        Container(rtdata, "Runtime data", "Files (mounted ./data)", "Shop-floor CSV slice, RAG .docx, .pkl anomaly bundles")
     }
 
     Rel(operator, spa, "Uses", "HTTPS")
@@ -522,7 +522,7 @@ docker save -o pcil_image.tar ghcr.io/dionkcq/itp_pcil:latest
 
 ---
 
-## Status (NUC-test prep, 10 June 2026)
+## Status
 
 | Component | Status |
 |---|---|

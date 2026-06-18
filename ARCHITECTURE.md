@@ -33,8 +33,8 @@ C4Component
 
     Person(operator, "Operator / engineer", "")
     System_Ext(gemini, "Google Gemini API", "LLM (gemini-2.5-flash)")
-    ContainerDb(recipes, "Config recipes", "YAML files (systems/)")
-    ContainerDb(rtdata, "Runtime data", "Files (data/): CSV slice, RAG .docx, .pkl bundles")
+    Container(recipes, "Config recipes", "YAML files (mounted ./systems)")
+    Container(rtdata, "Runtime data", "Files (mounted ./data): CSV slice, RAG .docx, .pkl bundles")
 
     Container_Boundary(orch, "PCIL Job Orchestrator") {
         Component(api, "API + coordinator", "orchestrator.py / FastAPI", "Routes for /pipeline, /anomaly, /configs; wires the stages in memory")
