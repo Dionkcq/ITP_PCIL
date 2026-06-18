@@ -63,8 +63,9 @@ PCIL is documented with the [C4 model](https://c4model.com) - diagrams at increa
 zoom: **Context** (the system and who it talks to), **Container** (the runnable pieces),
 and **Component** (the code modules inside a container), plus a **runtime data-flow** that
 shows the contract handed between pipeline stages. The *Code* level (L4) is intentionally
-skipped - the source is the truth at that zoom. All diagrams are Mermaid and render on
-GitHub; use the table-of-contents icon at the top of the file to jump between levels.
+skipped - the source is the truth at that zoom. The diagrams below are generated from a
+single [LikeC4](https://likec4.dev) model, [`docs/c4/pcil.c4`](docs/c4/pcil.c4) - edit it
+and re-export the PNGs with the steps in [`docs/c4/README.md`](docs/c4/README.md).
 
 > **Scope.** These reflect the current `main` branch: a CSV/file data source and a
 > **single** orchestrator container (pipeline + anomaly together). The planned PostgreSQL
@@ -73,49 +74,11 @@ GitHub; use the table-of-contents icon at the top of the file to jump between le
 
 ### Level 1 - System context
 
-```mermaid
-C4Context
-    title System context - PCIL
-
-    Person(operator, "Factory operator / engineer", "Runs diagnoses, uploads CSVs, trains and scores anomaly models")
-    System(pcil, "PCIL", "Production Context Intelligence Layer: turns a shop-floor data window into an operator-facing diagnosis and recovery advice")
-    System_Ext(gemini, "Google Gemini API", "LLM (gemini-2.5-flash) that writes the operator recommendation")
-    System_Ext(shop, "Shop-floor data source", "Engineer-owned. On main: a CSV slice in the data folder. PostgreSQL planned on a separate branch")
-    System_Ext(docs, "Maintenance documents", "DOCX error / cause / recovery references used by RAG retrieval")
-
-    Rel(operator, pcil, "Views diagnosis + recommendation; uploads CSV; trains/scores anomalies", "HTTPS / browser")
-    Rel(pcil, shop, "Pulls a time-window slice", "CSV read")
-    Rel(pcil, docs, "Retrieves recovery records", "file read + TF-IDF")
-    Rel(pcil, gemini, "Composes the recommendation", "HTTPS")
-
-    UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="1")
-```
+![Level 1 - System context](docs/c4/index.png)
 
 ### Level 2 - Containers
 
-```mermaid
-C4Container
-    title Container diagram - PCIL (current main branch)
-
-    Person(operator, "Factory operator / engineer", "Uses the dashboard in a browser")
-    System_Ext(gemini, "Google Gemini API", "LLM (gemini-2.5-flash)")
-
-    Container_Boundary(pcil, "PCIL") {
-        Container(spa, "Operator dashboard", "React 18 + Vite (SPA)", "KPI rings, anomaly chart, ranked impacts, LLM recommendation, config editor; parses CSVs client-side; runs in the browser")
-        Container(orch, "PCIL Job Orchestrator", "Python 3.13, FastAPI, uvicorn", "One service: pipeline (preprocess, context model, RAG), anomaly train/score, config-recipe CRUD; also serves the dashboard")
-        Container(recipes, "Config recipes", "YAML files (mounted ./systems)", "Per-system trigger + input schema + feature descriptions")
-        Container(rtdata, "Runtime data", "Files (mounted ./data)", "Shop-floor CSV slice, RAG .docx, .pkl anomaly bundles")
-    }
-
-    Rel(operator, spa, "Uses", "HTTPS")
-    Rel(spa, orch, "Calls /pipeline, /anomaly, /configs", "JSON over HTTP (same origin)")
-    Rel(orch, spa, "Serves the built SPA at /dashboard", "static files")
-    Rel(orch, recipes, "Reads + writes recipes (validated, backed up)", "PyYAML")
-    Rel(orch, rtdata, "Reads slice / docs / bundles; writes optional CSV", "pandas, joblib, python-docx")
-    Rel(orch, gemini, "Composes recommendation", "HTTPS (google-genai)")
-
-    UpdateLayoutConfig($c4ShapeInRow="2", $c4BoundaryInRow="1")
-```
+![Level 2 - Containers](docs/c4/containers.png)
 
 ### Level 3 - Components (the orchestrator's internals)
 
@@ -123,44 +86,7 @@ Inside the single FastAPI container, the request coordinator (`orchestrator.py`)
 together the pipeline stages, the anomaly subpackages, and the config-recipe manager.
 Data passes between stages **in memory**; nothing is written to disk during a normal run.
 
-```mermaid
-C4Component
-    title Component diagram - PCIL Job Orchestrator (FastAPI)
-
-    Person(operator, "Operator / engineer", "")
-    System_Ext(gemini, "Google Gemini API", "LLM (gemini-2.5-flash)")
-    Container(recipes, "Config recipes", "YAML files (mounted ./systems)")
-    Container(rtdata, "Runtime data", "Files (mounted ./data): CSV slice, RAG .docx, .pkl bundles")
-
-    Container_Boundary(orch, "PCIL Job Orchestrator") {
-        Component(api, "API + coordinator", "orchestrator.py / FastAPI", "Routes for /pipeline, /anomaly, /configs; wires the stages in memory")
-        Component(trigger, "Trigger / slice", "trigger.py", "Selects the window: all / time_range / last_n")
-        Component(prep, "Preprocess (Pipeline 1)", "preprocess.py / scikit-learn", "sklearn Pipeline + ColumnTransformer to the Golden DataFrame")
-        Component(adapter, "Adapter", "adapter.py", "Golden DataFrame to X / y arrays; validates the 0-1 range")
-        Component(model, "Context model (Pipeline 2)", "train_context_model.py", "Multi-target LinearRegression to per-target ranked impacts")
-        Component(rag, "RAG retrieval", "rag/loader.py + rag/lookup.py", "DOCX to records; TF-IDF + cosine top-k")
-        Component(composer, "LLM composer (Pipeline 3)", "rag/composer.py / google-genai", "Builds the grounded prompt and calls Gemini")
-        Component(anomaly, "Anomaly detection", "utils/anomaly/ (base + cyclical / non_cyclical / irregular)", "Per-data-type score/train over AnomalyModel + PerMachineNormaliser; torch for the cyclical autoencoder")
-        Component(cfg, "Config recipe manager", "orchestrator.py helpers", "Validate / save / create / delete recipes; path-traversal safe")
-    }
-
-    Rel(operator, api, "HTTP requests", "JSON")
-    Rel(api, trigger, "Pull slice")
-    Rel(trigger, rtdata, "Reads CSV slice")
-    Rel(api, prep, "Preprocess slice")
-    Rel(prep, adapter, "Golden DataFrame")
-    Rel(adapter, model, "X / y arrays")
-    Rel(api, rag, "Retrieve recovery records")
-    Rel(rag, rtdata, "Reads RAG .docx")
-    Rel(api, composer, "Compose recommendation")
-    Rel(composer, gemini, "Prompt", "HTTPS")
-    Rel(api, anomaly, "Score / train")
-    Rel(anomaly, rtdata, "Reads / writes .pkl bundles")
-    Rel(api, cfg, "Manage recipes")
-    Rel(cfg, recipes, "Reads / writes YAML")
-
-    UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="1")
-```
+![Level 3 - Components](docs/c4/components.png)
 
 Notes:
 - The **dashboard** (a separate container, shown at Level 2 above) is served by this
@@ -174,19 +100,7 @@ Notes:
 The diagnosis path (`POST /pipeline/run`). Each arrow is the contract the previous stage
 produces and the next one accepts - "stage 1 produces this, stage 2 consumes it":
 
-```mermaid
-flowchart TD
-    req["POST /pipeline/run<br/>input: config recipe path"]
-    slice["Trigger / _pull_slice<br/>contract: shop-floor slice DataFrame<br/>(timestamp + declared feature/target columns)"]
-    golden["Preprocess (Pipeline 1)<br/>contract: Golden DataFrame<br/>(timestamp, targets passthrough, features scaled 0-1)"]
-    xy["Adapter<br/>contract: X (rows x features), y (rows x targets)"]
-    impacts["Context model (Pipeline 2)<br/>contract: impacts dict<br/>(per-target ranked feature impacts)<br/>+ target_summary (window means)"]
-    records["RAG retrieval<br/>contract: top-k recovery records<br/>(error, cause, recovery, source_doc)"]
-    reco["LLM composer (Pipeline 3)<br/>contract: operator_recommendation<br/>+ recommendation_status"]
-    resp["JSON response<br/>impacts + target_summary + records<br/>+ recommendation + status"]
-
-    req --> slice --> golden --> xy --> impacts --> records --> reco --> resp
-```
+![Runtime data-flow - stage contracts](docs/c4/dataflow.png)
 
 `target_summary` (from the context-model stage) is also fed into the composer, so the
 recommendation is grounded in measured performance, and it drives the dashboard KPI cards.
@@ -197,15 +111,7 @@ Anomaly detection is **input to output only** - PCIL never writes to the shop-fl
 The engineer calls the API and writes the returned score back themselves (only they know
 the row mapping):
 
-```mermaid
-flowchart LR
-    raw["Engineer: POST /anomaly/score<br/>input: raw time-series rows + model_type"]
-    pipe["Anomaly subpackage<br/>slice / features / per-machine standardise / model"]
-    score["contract: anomaly_score per cycle or window<br/>(+ threshold, is_anomaly)"]
-    back["Engineer writes the score back into<br/>their shop-floor data themselves"]
-
-    raw --> pipe --> score --> back
-```
+![Anomaly scoring flow](docs/c4/anomalyflow.png)
 
 #### Contract table
 

@@ -1,0 +1,155 @@
+// PCIL architecture - LikeC4 model (current main branch).
+// One model -> multiple views. Relationships are declared at the deepest
+// level; LikeC4 rolls them up into the higher-level views automatically.
+// Regenerate the PNGs with:  npx -y likec4@latest export png -o .
+// (see README.md in this folder)
+
+specification {
+  element person {
+    style {
+      shape person
+    }
+  }
+  element system
+  element container
+  element component
+  tag external
+}
+
+model {
+  operator = person 'Operator / engineer' {
+    description 'Runs diagnoses, uploads CSVs, trains and scores anomaly models'
+  }
+
+  gemini = system 'Google Gemini API' {
+    #external
+    description 'LLM (gemini-2.5-flash) that writes the operator recommendation'
+  }
+  shop = system 'Shop-floor data source' {
+    #external
+    description 'Engineer-owned. On main: a CSV slice in ./data. Postgres planned'
+  }
+  docs = system 'Maintenance documents' {
+    #external
+    description 'DOCX error / cause / recovery references used by RAG'
+  }
+
+  pcil = system 'PCIL' {
+    description 'Production Context Intelligence Layer'
+
+    dashboard = container 'Operator dashboard' {
+      technology 'React 18 + Vite SPA'
+      description 'KPI rings, anomaly chart, ranked impacts, recommendation, config editor'
+    }
+
+    orchestrator = container 'PCIL Job Orchestrator' {
+      technology 'Python 3.13, FastAPI'
+      description 'Pipeline + anomaly + config APIs; serves the dashboard'
+
+      api = component 'API + coordinator' {
+        technology 'orchestrator.py / FastAPI'
+        description 'Routes for /pipeline, /anomaly, /configs; wires the stages in memory'
+      }
+      trigger = component 'Trigger / slice' {
+        technology 'trigger.py'
+        description 'Selects the window: all / time_range / last_n'
+      }
+      prep = component 'Preprocess (Pipeline 1)' {
+        technology 'preprocess.py / scikit-learn'
+        description 'sklearn Pipeline + ColumnTransformer to the Golden DataFrame'
+      }
+      adapter = component 'Adapter' {
+        technology 'adapter.py'
+        description 'Golden DataFrame to X / y arrays'
+      }
+      ctxmodel = component 'Context model (Pipeline 2)' {
+        technology 'train_context_model.py'
+        description 'Multi-target LinearRegression to per-target ranked impacts'
+      }
+      rag = component 'RAG retrieval' {
+        technology 'rag/loader.py + lookup.py'
+        description 'DOCX to records; TF-IDF + cosine top-k'
+      }
+      composer = component 'LLM composer (Pipeline 3)' {
+        technology 'rag/composer.py / google-genai'
+        description 'Builds the grounded prompt and calls Gemini'
+      }
+      anomaly = component 'Anomaly detection' {
+        technology 'utils/anomaly/*'
+        description 'cyclical / non_cyclical / irregular over AnomalyModel + PerMachineNormaliser'
+      }
+      cfg = component 'Config recipe manager' {
+        technology 'orchestrator.py'
+        description 'Validate / save / create / delete recipes'
+      }
+    }
+
+    recipes = container 'Config recipes' {
+      technology 'YAML files (mounted ./systems)'
+      description 'Per-system trigger + schema + feature descriptions'
+    }
+    rtdata = container 'Runtime data' {
+      technology 'Files (mounted ./data)'
+      description 'RAG .docx, .pkl anomaly bundles'
+    }
+  }
+
+  // Relationships (deepest level; LikeC4 aggregates them upward per view)
+  operator -> dashboard 'Uses'
+  dashboard -> api 'Calls /pipeline, /anomaly, /configs'
+  api -> trigger 'Pull slice'
+  trigger -> shop 'Reads CSV slice'
+  api -> prep 'Preprocess slice'
+  prep -> adapter 'Golden DataFrame'
+  adapter -> ctxmodel 'X / y arrays'
+  api -> rag 'Retrieve records'
+  rag -> docs 'Reads .docx'
+  api -> composer 'Compose recommendation'
+  composer -> gemini 'Prompt'
+  api -> anomaly 'Score / train'
+  anomaly -> rtdata 'Reads / writes .pkl bundles'
+  api -> cfg 'Manage recipes'
+  cfg -> recipes 'Reads / writes YAML'
+}
+
+views {
+  view index {
+    title 'PCIL - System Context (Level 1)'
+    include *
+  }
+
+  view containers of pcil {
+    title 'PCIL - Containers (Level 2)'
+    include *
+  }
+
+  view components of orchestrator {
+    title 'Orchestrator - Components (Level 3)'
+    include *
+  }
+
+  dynamic view dataflow {
+    title 'Runtime data-flow - the stage contracts (POST /pipeline/run)'
+    operator -> api 'POST /pipeline/run (config recipe)'
+    api -> trigger 'pull slice'
+    trigger -> shop 'read CSV slice'
+    api -> prep 'preprocess -> Golden DataFrame'
+    prep -> adapter 'X / y'
+    adapter -> ctxmodel 'fit -> impacts + target_summary'
+    api -> rag 'retrieve records'
+    rag -> docs 'read .docx'
+    api -> composer 'compose'
+    composer -> gemini 'prompt'
+    api -> operator 'JSON: impacts + recommendation + status'
+  }
+
+  dynamic view anomalyflow {
+    title 'Anomaly scoring - input to output only (POST /anomaly/score)'
+    operator -> api 'POST /anomaly/score (raw rows + model_type)'
+    api -> anomaly 'dispatch by model_type'
+    anomaly -> rtdata 'load matching .pkl bundle'
+    anomaly -> api 'anomaly_score (+ threshold, is_anomaly)'
+    api -> operator 'returns scores'
+    operator -> shop 'engineer writes the scores back themselves'
+  }
+}
