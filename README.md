@@ -65,7 +65,10 @@ and **Component** (the code modules inside a container), plus a **runtime data-f
 shows the contract handed between pipeline stages. The *Code* level (L4) is intentionally
 skipped - the source is the truth at that zoom. The diagrams below are generated from a
 single [LikeC4](https://likec4.dev) model, [`docs/c4/pcil.c4`](docs/c4/pcil.c4) - edit it
-and re-export the PNGs with the steps in [`docs/c4/README.md`](docs/c4/README.md).
+and re-export the PNGs with the steps in [`docs/c4/README.md`](docs/c4/README.md). You
+can also **browse the interactive version** at
+[dionkcq.github.io/ITP_PCIL](https://dionkcq.github.io/ITP_PCIL/) - auto-deployed from
+`docs/c4/` via GitHub Pages.
 
 > **Scope.** These reflect the current `main` branch: a CSV/file data source and a
 > **single** orchestrator container (pipeline + anomaly together). The planned PostgreSQL

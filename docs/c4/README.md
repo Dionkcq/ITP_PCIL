@@ -31,11 +31,17 @@ The first run downloads a headless browser via `npx`; no dependency is added to 
 project (it is **not** in the dashboard's `package.json`, so the Docker build is
 unaffected).
 
-## Optional: interactive site
+## Interactive site (deployed)
 
-LikeC4 can also build an interactive, browsable version of the same model:
+The same model is published as an interactive, browsable site on GitHub Pages,
+**auto-deployed** by [`.github/workflows/c4-pages.yml`](../../.github/workflows/c4-pages.yml)
+on every push that touches `docs/c4/`:
+
+**https://dionkcq.github.io/ITP_PCIL/**
+
+Run it locally too:
 
 ```bash
-npx -y likec4@latest build -o dist   # static site (dist/ is gitignored)
-npx -y likec4@latest start           # local dev server with live preview
+npx -y likec4@latest start                          # dev server, live preview
+npx -y likec4@latest build docs/c4 -o dist --base / # static site (dist/ gitignored)
 ```
