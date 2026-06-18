@@ -123,8 +123,8 @@ the row mapping):
 | Trigger (`_pull_slice`) | config recipe (trigger mode + source) | shop-floor slice DataFrame (timestamp + declared columns) |
 | Preprocess (Pipeline 1) | slice + recipe schema | Golden DataFrame: timestamp, targets (passthrough), features scaled 0-1 |
 | Adapter | Golden DataFrame | `X` (rows x features), `y` (rows x targets), names; raises if features leave 0-1 |
-| Context model (Pipeline 2) | `X`, `y` | impacts dict (`system`, `context_window`, per-target `ranked_feature_impacts`) + fitted model; orchestrator also computes `target_summary` |
-| RAG retrieval | query from target names + top feature descriptions | top-k records (`error`, `cause`, `recovery`, `source_doc`) |
+| Context model (Pipeline 2) | `X`, `y` | impacts dict (`system`, `context_window`, per-target `ranked_feature_impacts` ranked by live contribution = value x weight) + fitted model; orchestrator also computes `target_summary` |
+| RAG retrieval | query from worst-target names + top live-contributor descriptions | top-k records (`error`, `cause`, `recovery`, `source_doc`) |
 | LLM composer (Pipeline 3) | impacts + records + `target_summary` | `operator_recommendation` + `recommendation_status` (ok / no_records / retrieval_failed / llm_unavailable / rag_unavailable) |
 | Response | all of the above | JSON: impacts, target_summary, recovery_records, operator_recommendation, recommendation_status, artifacts |
 | `/anomaly/score` | raw time-series rows + `model_type` (+ `model_id`) | `anomaly_score` per cycle/window (+ `threshold`, `is_anomaly`) |

@@ -72,7 +72,47 @@ def test_prompt_forbids_fabrication():
 def test_prompt_falls_back_to_intercept_without_summary():
     # Defensive path: no target_summary -> intercept ordering.
     prompt = _build_prompt(_impacts(), _RECORDS, target_summary=None)
-    head = prompt.split("Features most associated")[0]
+    head = prompt.split("Features")[0]
     # Lowest intercepts are quality (0.10) and performance (0.80).
     assert "quality" in head
     assert "performance" in head
+
+
+def _impacts_with_contribution():
+    """Worst target (oee) carries two features. air_pressure has the SMALLER
+    weight but a maxed current value, so its live contribution is larger;
+    setvelo has the larger weight but a near-zero value. Live-contribution
+    ranking must surface air_pressure first."""
+    return {
+        "system": "inkjet_printer",
+        "context": [
+            {"target": "oee", "intercept": 0.5, "ranked_feature_impacts": [
+                {"feature": "air_pressure_low_ratio", "raw_impact_score": -0.5,
+                 "feature_value": 0.98, "contribution": -0.49,
+                 "standardized_contribution": -0.86,
+                 "description": "air pressure below threshold ratio"},
+                {"feature": "setvelo_mean", "raw_impact_score": 0.8,
+                 "feature_value": 0.10, "contribution": 0.08,
+                 "standardized_contribution": 0.14,
+                 "description": "mean commanded velocity"},
+            ]},
+            {"target": "availability", "intercept": 0.9,
+             "ranked_feature_impacts": []},
+        ],
+    }
+
+
+def test_prompt_features_ranked_by_live_contribution_not_weight():
+    prompt = _build_prompt(
+        _impacts_with_contribution(), _RECORDS,
+        target_summary={"oee": 0.20, "availability": 0.95},
+    )
+    low = prompt.lower()
+    # air_pressure has the smaller weight (0.5 < 0.8) but the larger live
+    # contribution (|-0.49| > |0.08|) because its value is maxed - it must lead.
+    assert "air_pressure_low_ratio" in prompt
+    assert "live contribution" in low
+    # The signed contribution value is shown to the model, not just the weight.
+    assert "-0.490" in prompt
+    # ...and it is ranked ahead of the higher-weight but dormant feature.
+    assert prompt.index("air_pressure_low_ratio") < prompt.index("setvelo_mean")

@@ -104,10 +104,12 @@ def _build_prompt(
     (`target_summary`) when available - the real "how is this window doing"
     signal - instead of the regression intercept, which is only the predicted
     value when all scaled features are 0 and does not reflect current
-    performance. The prompt feeds those measured values to the model and
-    forbids inventing numbers it was not given, so it cannot fabricate
-    severity. Total length is kept under ~1 800 characters by truncating long
-    recovery texts.
+    performance. The features shown are the largest LIVE CONTRIBUTORS to those
+    worst targets (contribution = current normalised value x model weight), not
+    the features with the largest weight regardless of their current value. The
+    prompt feeds those measured values to the model and forbids inventing
+    numbers it was not given, so it cannot fabricate severity. Total length is
+    kept under ~1 800 characters by truncating long recovery texts.
     """
     system_name = impacts.get("system", "unknown system")
     context_blocks = impacts.get("context", [])
@@ -134,20 +136,45 @@ def _build_prompt(
         )
         targets_header = "Worst-performing targets (by regression baseline)"
 
-    # --- Top contributing features (deduplicated) -------------------
+    # --- Top live contributors to the worst targets ----------------
+    # Pull features from the worst-performing blocks only and keep the three
+    # with the largest absolute LIVE CONTRIBUTION (current normalised value x
+    # model weight). Contribution, not the weight alone, is what actually moved
+    # the target this window: a feature with a big weight but a near-zero value
+    # contributes almost nothing. ranked_feature_impacts already arrives sorted
+    # by |contribution|, but we re-sort defensively across the pooled blocks.
+    candidates: list[dict] = []
+    for block in worst_two:
+        candidates.extend(block.get("ranked_feature_impacts", []))
+    if not candidates:  # worst-two carried no impacts; fall back to all blocks
+        for block in context_blocks:
+            candidates.extend(block.get("ranked_feature_impacts", []))
+
+    def _abs_contribution(fi: dict) -> float:
+        # New schema carries "contribution"; fall back to the coefficient for
+        # archived impacts produced before live contribution existed.
+        return abs(fi.get("contribution", fi.get("raw_impact_score", 0.0)))
+
+    candidates.sort(key=_abs_contribution, reverse=True)
+
     seen: set[str] = set()
     impact_lines: list[str] = []
-    for block in context_blocks:
-        for fi in block.get("ranked_feature_impacts", [])[:1]:
-            feat = fi["feature"]
-            if feat not in seen:
-                seen.add(feat)
-                desc = fi.get("description") or feat.replace("_", " ")
-                impact_lines.append(
-                    f"  - {feat} (impact {fi['raw_impact_score']:+.3f}): {desc}"
-                )
-            if len(impact_lines) >= 3:
-                break
+    for fi in candidates:
+        feat = fi["feature"]
+        if feat in seen:
+            continue
+        seen.add(feat)
+        desc = fi.get("description") or feat.replace("_", " ")
+        if "contribution" in fi:
+            impact_lines.append(
+                f"  - {feat} (live contribution {fi['contribution']:+.3f} "
+                f"= value {fi.get('feature_value', float('nan')):.2f} "
+                f"x weight {fi.get('raw_impact_score', float('nan')):+.3f}): {desc}"
+            )
+        else:  # archived run without contribution: fall back to the weight
+            impact_lines.append(
+                f"  - {feat} (impact {fi.get('raw_impact_score', 0.0):+.3f}): {desc}"
+            )
         if len(impact_lines) >= 3:
             break
 
@@ -170,8 +197,10 @@ def _build_prompt(
     return (
         f"Machine: {system_name}\n\n"
         f"{targets_header}:\n{target_lines}\n\n"
-        f"Features most associated with the result "
-        f"(model impact scores, not raw sensor readings):\n{impacts_text}\n\n"
+        f"Features contributing most to the worst target(s) this window "
+        f"(live contribution = current normalised value x model weight; these "
+        f"are model quantities, not raw sensor readings; positive pushed the "
+        f"target up, negative pulled it down):\n{impacts_text}\n\n"
         f"Relevant recovery records from the maintenance documents:\n"
         f"{records_text}\n\n"
         "Task: Using ONLY the information above, write a short paragraph "

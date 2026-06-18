@@ -1,66 +1,358 @@
 {
+  "system": "inkjet_printer",
   "model": "linear_regression",
-  "machine": "inkjet_printer",
-  "fitted_at": "2026-05-08T13:57:18.060163+00:00",
-  "n_rows": 625,
-  "n_features": 6,
-  "n_targets": 4,
-  "blocks": [
+  "fitted_at": "2026-06-18T16:49:27.738843+00:00",
+  "context_window": {
+    "start_time": "2026-05-15T09:00:00+00:00",
+    "end_time": "2026-05-15T09:01:59+00:00",
+    "row_count": 240,
+    "feature_count": 8,
+    "target_count": 4
+  },
+  "context": [
     {
-      "time_from": "2026-03-15T08:08:17+00:00",
-      "time_to": "2026-03-15T08:26:51+00:00",
       "target": "availability",
-      "intercept": 0.8494602198104788,
-      "feature_impacts": {
-        "air_pressure_low_ratio": 0.15680742067034525,
-        "cycle_stop_present": -0.02630238564496995,
-        "vibration": -0.18178006533607827,
-        "acoustic_emission": 0.5143501031679922,
-        "setpressure_cycle_count": -0.01067561012402713,
-        "setvelo_mean": -0.0022270809717883176
-      }
+      "intercept": 1.0,
+      "ranked_feature_impacts": [
+        {
+          "feature": "air_pressure_low_ratio",
+          "description": "Proportion of operating time during which air pressure falls below the defined threshold.",
+          "raw_impact_score": 0.0,
+          "standardized_impact_score": 0.0,
+          "feature_value": 0.10659567696835909,
+          "contribution": 0.0,
+          "standardized_contribution": 0.0,
+          "rank": 1
+        },
+        {
+          "feature": "cycle_stop_present",
+          "description": "Whether a cycle interruption event occurred during the observation window (0 or 1).",
+          "raw_impact_score": 0.0,
+          "standardized_impact_score": 0.0,
+          "feature_value": 0.0,
+          "contribution": 0.0,
+          "standardized_contribution": 0.0,
+          "rank": 2
+        },
+        {
+          "feature": "vibration",
+          "description": "Aggregated vibration signal (RMS over the window) from the machine accelerometer.",
+          "raw_impact_score": 0.0,
+          "standardized_impact_score": 0.0,
+          "feature_value": 0.010505198478968365,
+          "contribution": 0.0,
+          "standardized_contribution": 0.0,
+          "rank": 3
+        },
+        {
+          "feature": "acoustic_emission",
+          "description": "Aggregated acoustic emission signal (RMS over the window) from the AE sensor.",
+          "raw_impact_score": 0.0,
+          "standardized_impact_score": 0.0,
+          "feature_value": 0.4510154172399935,
+          "contribution": 0.0,
+          "standardized_contribution": 0.0,
+          "rank": 4
+        },
+        {
+          "feature": "setpressure_cycle_count",
+          "description": "Number of distinct pressure setpoint changes observed in the window.",
+          "raw_impact_score": 0.0,
+          "standardized_impact_score": 0.0,
+          "feature_value": 0.5725877192982457,
+          "contribution": 0.0,
+          "standardized_contribution": 0.0,
+          "rank": 5
+        },
+        {
+          "feature": "setvelo_mean",
+          "description": "Mean commanded velocity setpoint over the observation window.",
+          "raw_impact_score": 0.0,
+          "standardized_impact_score": 0.0,
+          "feature_value": 0.4980406504065041,
+          "contribution": 0.0,
+          "standardized_contribution": 0.0,
+          "rank": 6
+        },
+        {
+          "feature": "cyclical_anomaly_score",
+          "description": "Anomaly score from the cyclical pipeline, aggregated to the canonical row rate.",
+          "raw_impact_score": 0.0,
+          "standardized_impact_score": 0.0,
+          "feature_value": 0.19869511386972355,
+          "contribution": 0.0,
+          "standardized_contribution": 0.0,
+          "rank": 7
+        },
+        {
+          "feature": "acoustic_anomaly_score",
+          "description": "Anomaly score from the non-cyclical / acoustic pipeline, aggregated to the canonical row rate.",
+          "raw_impact_score": 0.0,
+          "standardized_impact_score": 0.0,
+          "feature_value": 0.5061568158763771,
+          "contribution": 0.0,
+          "standardized_contribution": 0.0,
+          "rank": 8
+        }
+      ]
     },
     {
-      "time_from": "2026-03-15T08:08:17+00:00",
-      "time_to": "2026-03-15T08:26:51+00:00",
       "target": "performance",
-      "intercept": 0.7327273578712035,
-      "feature_impacts": {
-        "air_pressure_low_ratio": 0.07271154138152455,
-        "cycle_stop_present": 0.2243265793342209,
-        "vibration": -0.4017504659176066,
-        "acoustic_emission": 0.24140454562260505,
-        "setpressure_cycle_count": -0.0067755143627239445,
-        "setvelo_mean": -0.003996747132104184
-      }
+      "intercept": 1.0,
+      "ranked_feature_impacts": [
+        {
+          "feature": "air_pressure_low_ratio",
+          "description": "Proportion of operating time during which air pressure falls below the defined threshold.",
+          "raw_impact_score": -0.3999999999999997,
+          "standardized_impact_score": -0.9999999999999984,
+          "feature_value": 0.10659567696835909,
+          "contribution": -0.0426382707873436,
+          "standardized_contribution": -0.9999999999999938,
+          "rank": 1
+        },
+        {
+          "feature": "setpressure_cycle_count",
+          "description": "Number of distinct pressure setpoint changes observed in the window.",
+          "raw_impact_score": -2.575826387061553e-16,
+          "standardized_impact_score": -6.439565967653878e-16,
+          "feature_value": 0.5725877192982457,
+          "contribution": -1.474886556275815e-16,
+          "standardized_contribution": -3.45906747398771e-15,
+          "rank": 2
+        },
+        {
+          "feature": "acoustic_anomaly_score",
+          "description": "Anomaly score from the non-cyclical / acoustic pipeline, aggregated to the canonical row rate.",
+          "raw_impact_score": 1.123815830687039e-16,
+          "standardized_impact_score": 2.8095395767175956e-16,
+          "feature_value": 0.5061568158763771,
+          "contribution": 5.688270424920174e-17,
+          "standardized_contribution": 1.3340762464993302e-15,
+          "rank": 3
+        },
+        {
+          "feature": "setvelo_mean",
+          "description": "Mean commanded velocity setpoint over the observation window.",
+          "raw_impact_score": 4.9141192598197026e-17,
+          "standardized_impact_score": 1.2285298149549247e-16,
+          "feature_value": 0.4980406504065041,
+          "contribution": 2.4474311523357332e-17,
+          "standardized_contribution": 5.739986887700413e-16,
+          "rank": 4
+        },
+        {
+          "feature": "acoustic_emission",
+          "description": "Aggregated acoustic emission signal (RMS over the window) from the AE sensor.",
+          "raw_impact_score": -5.204924904032395e-17,
+          "standardized_impact_score": -1.3012312260080978e-16,
+          "feature_value": 0.4510154172399935,
+          "contribution": -2.3475013772950037e-17,
+          "standardized_contribution": -5.505620499956585e-16,
+          "rank": 5
+        },
+        {
+          "feature": "cyclical_anomaly_score",
+          "description": "Anomaly score from the cyclical pipeline, aggregated to the canonical row rate.",
+          "raw_impact_score": 7.209337294741623e-17,
+          "standardized_impact_score": 1.8023343236854044e-16,
+          "feature_value": 0.19869511386972355,
+          "contribution": 1.4324600947039314e-17,
+          "standardized_contribution": 3.3595642324433157e-16,
+          "rank": 6
+        },
+        {
+          "feature": "vibration",
+          "description": "Aggregated vibration signal (RMS over the window) from the machine accelerometer.",
+          "raw_impact_score": 4.090703711620989e-17,
+          "standardized_impact_score": 1.0226759279052464e-16,
+          "feature_value": 0.010505198478968365,
+          "contribution": 4.2973654409231055e-19,
+          "standardized_contribution": 1.0078657885438155e-17,
+          "rank": 7
+        },
+        {
+          "feature": "cycle_stop_present",
+          "description": "Whether a cycle interruption event occurred during the observation window (0 or 1).",
+          "raw_impact_score": 2.5061670971037172e-17,
+          "standardized_impact_score": 6.265417742759288e-17,
+          "feature_value": 0.0,
+          "contribution": 0.0,
+          "standardized_contribution": 0.0,
+          "rank": 8
+        }
+      ]
     },
     {
-      "time_from": "2026-03-15T08:08:17+00:00",
-      "time_to": "2026-03-15T08:26:51+00:00",
       "target": "quality",
-      "intercept": 0.8750750180276697,
-      "feature_impacts": {
-        "air_pressure_low_ratio": 0.18596070846386384,
-        "cycle_stop_present": 0.14068531446234844,
-        "vibration": -0.0051660430103536055,
-        "acoustic_emission": -0.7400807692083166,
-        "setpressure_cycle_count": -0.08772218485613377,
-        "setvelo_mean": 0.004927740878327411
-      }
+      "intercept": 0.9825471068783108,
+      "ranked_feature_impacts": [
+        {
+          "feature": "setpressure_cycle_count",
+          "description": "Number of distinct pressure setpoint changes observed in the window.",
+          "raw_impact_score": 0.003869758210827939,
+          "standardized_impact_score": 0.31018423236957626,
+          "feature_value": 0.5725877192982457,
+          "contribution": 0.0022157760281736293,
+          "standardized_contribution": 0.45591474811443444,
+          "rank": 1
+        },
+        {
+          "feature": "acoustic_anomaly_score",
+          "description": "Anomaly score from the non-cyclical / acoustic pipeline, aggregated to the canonical row rate.",
+          "raw_impact_score": 0.0022141339535554855,
+          "standardized_impact_score": 0.1774760600869903,
+          "feature_value": 0.5061568158763771,
+          "contribution": 0.0011206989918554186,
+          "standardized_contribution": 0.23059334160457215,
+          "rank": 2
+        },
+        {
+          "feature": "setvelo_mean",
+          "description": "Mean commanded velocity setpoint over the observation window.",
+          "raw_impact_score": -0.001217128498928787,
+          "standardized_impact_score": -0.0975601183761263,
+          "feature_value": 0.4980406504065041,
+          "contribution": -0.0006061794692347851,
+          "standardized_contribution": -0.12472657728683688,
+          "rank": 3
+        },
+        {
+          "feature": "cyclical_anomaly_score",
+          "description": "Anomaly score from the cyclical pipeline, aggregated to the canonical row rate.",
+          "raw_impact_score": -0.0027269238707627757,
+          "standardized_impact_score": -0.21857923454133713,
+          "feature_value": 0.19869511386972355,
+          "contribution": -0.000541826449015277,
+          "standardized_contribution": -0.11148539648574145,
+          "rank": 4
+        },
+        {
+          "feature": "air_pressure_low_ratio",
+          "description": "Proportion of operating time during which air pressure falls below the defined threshold.",
+          "raw_impact_score": -0.0018085407888958007,
+          "standardized_impact_score": -0.14496534557198842,
+          "feature_value": 0.10659567696835909,
+          "contribution": -0.00019278262971723808,
+          "standardized_contribution": -0.03966666438792504,
+          "rank": 5
+        },
+        {
+          "feature": "acoustic_emission",
+          "description": "Aggregated acoustic emission signal (RMS over the window) from the AE sensor.",
+          "raw_impact_score": 0.00039973686525783645,
+          "standardized_impact_score": 0.032041297141739124,
+          "feature_value": 0.4510154172399935,
+          "contribution": 0.00018028748907047016,
+          "standardized_contribution": 0.03709568301246481,
+          "rank": 6
+        },
+        {
+          "feature": "vibration",
+          "description": "Aggregated vibration signal (RMS over the window) from the machine accelerometer.",
+          "raw_impact_score": 0.0002394545451303581,
+          "standardized_impact_score": 0.019193711912242433,
+          "feature_value": 0.010505198478968365,
+          "contribution": 2.5155175232854997e-06,
+          "standardized_contribution": 0.0005175891080252656,
+          "rank": 7
+        },
+        {
+          "feature": "cycle_stop_present",
+          "description": "Whether a cycle interruption event occurred during the observation window (0 or 1).",
+          "raw_impact_score": 9.486769009248164e-19,
+          "standardized_impact_score": 7.604211949385708e-17,
+          "feature_value": 0.0,
+          "contribution": 0.0,
+          "standardized_contribution": 0.0,
+          "rank": 8
+        }
+      ]
     },
     {
-      "time_from": "2026-03-15T08:08:17+00:00",
-      "time_to": "2026-03-15T08:26:51+00:00",
       "target": "oee",
-      "intercept": 0.5795961996597191,
-      "feature_impacts": {
-        "air_pressure_low_ratio": 0.27415394557052275,
-        "cycle_stop_present": 0.225054531662017,
-        "vibration": -0.40507593858188967,
-        "acoustic_emission": -0.11971755358952858,
-        "setpressure_cycle_count": -0.08070657284927368,
-        "setvelo_mean": -0.00033453770885105705
-      }
+      "intercept": 0.9832490228775745,
+      "ranked_feature_impacts": [
+        {
+          "feature": "air_pressure_low_ratio",
+          "description": "Proportion of operating time during which air pressure falls below the defined threshold.",
+          "raw_impact_score": -0.3953058005491907,
+          "standardized_impact_score": -0.9769394847284195,
+          "feature_value": 0.10659567696835909,
+          "contribution": -0.04213788941906012,
+          "standardized_contribution": -0.9160511431296467,
+          "rank": 1
+        },
+        {
+          "feature": "setpressure_cycle_count",
+          "description": "Number of distinct pressure setpoint changes observed in the window.",
+          "raw_impact_score": 0.0028738015967105257,
+          "standardized_impact_score": 0.007102173171255374,
+          "feature_value": 0.5725877192982457,
+          "contribution": 0.0016455035019761369,
+          "standardized_contribution": 0.03577220845159973,
+          "rank": 2
+        },
+        {
+          "feature": "acoustic_anomaly_score",
+          "description": "Anomaly score from the non-cyclical / acoustic pipeline, aggregated to the canonical row rate.",
+          "raw_impact_score": 0.0020204293437978763,
+          "standardized_impact_score": 0.004993190586421606,
+          "feature_value": 0.5061568158763771,
+          "contribution": 0.001022654083359931,
+          "standardized_contribution": 0.022231854869891134,
+          "rank": 3
+        },
+        {
+          "feature": "setvelo_mean",
+          "description": "Mean commanded velocity setpoint over the observation window.",
+          "raw_impact_score": -0.0011463261411700004,
+          "standardized_impact_score": -0.002832974543073981,
+          "feature_value": 0.4980406504065041,
+          "contribution": -0.000570917016926285,
+          "standardized_contribution": -0.012411375918389709,
+          "rank": 4
+        },
+        {
+          "feature": "cyclical_anomaly_score",
+          "description": "Anomaly score from the cyclical pipeline, aggregated to the canonical row rate.",
+          "raw_impact_score": -0.002601117925508942,
+          "standardized_impact_score": -0.006428276039294673,
+          "feature_value": 0.19869511386972355,
+          "contribution": -0.0005168294223975783,
+          "standardized_contribution": -0.011235545721855396,
+          "rank": 5
+        },
+        {
+          "feature": "acoustic_emission",
+          "description": "Aggregated acoustic emission signal (RMS over the window) from the AE sensor.",
+          "raw_impact_score": 0.0002235090457909082,
+          "standardized_impact_score": 0.0005523693599328785,
+          "feature_value": 0.4510154172399935,
+          "contribution": 0.00010080602554429927,
+          "standardized_contribution": 0.002191459425408294,
+          "rank": 6
+        },
+        {
+          "feature": "vibration",
+          "description": "Aggregated vibration signal (RMS over the window) from the machine accelerometer.",
+          "raw_impact_score": 0.00046595220777291747,
+          "standardized_impact_score": 0.0011515315716018664,
+          "feature_value": 0.010505198478968365,
+          "contribution": 4.894920424368004e-06,
+          "standardized_contribution": 0.0001064124832090601,
+          "rank": 7
+        },
+        {
+          "feature": "cycle_stop_present",
+          "description": "Whether a cycle interruption event occurred during the observation window (0 or 1).",
+          "raw_impact_score": 2.6075062248276382e-17,
+          "standardized_impact_score": 6.444063770807915e-17,
+          "feature_value": 0.0,
+          "contribution": 0.0,
+          "standardized_contribution": 0.0,
+          "rank": 8
+        }
+      ]
     }
   ]
 }

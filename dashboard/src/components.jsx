@@ -112,10 +112,12 @@ export function ImpactBars({ impacts }) {
 
   const block = blocks.find((b) => b.target === target)
   const feats = block?.ranked_feature_impacts ?? []
-  const maxAbs = Math.max(
-    1e-9,
-    ...feats.map((f) => Math.abs(f.standardized_impact_score)),
-  )
+  // Bar = live contribution (current normalised value x model weight) when
+  // present; fall back to the coefficient share for archived runs saved before
+  // contribution existed. ranked_feature_impacts already arrives ordered by it.
+  const valOf = (f) =>
+    f.standardized_contribution ?? f.standardized_impact_score ?? 0
+  const maxAbs = Math.max(1e-9, ...feats.map((f) => Math.abs(valOf(f))))
 
   return (
     <section className="impacts">
@@ -129,12 +131,21 @@ export function ImpactBars({ impacts }) {
           </select>
         )}
       </div>
+      <p className="muted">
+        Ranked by live contribution (current value &times; model weight)
+      </p>
       <div className="bars">
         {feats.map((f) => {
-          const v = f.standardized_impact_score
+          const v = valOf(f)
           const width = (Math.abs(v) / maxAbs) * 100
+          const tip = [
+            f.description || '',
+            f.feature_value != null ? `value ${f.feature_value.toFixed(2)}` : '',
+            f.raw_impact_score != null ? `weight ${f.raw_impact_score.toFixed(3)}` : '',
+            f.contribution != null ? `contribution ${f.contribution.toFixed(3)}` : '',
+          ].filter(Boolean).join('  •  ')
           return (
-            <div key={f.feature} className="bar-row" title={f.description || ''}>
+            <div key={f.feature} className="bar-row" title={tip}>
               <div className="bar-label">{f.feature}</div>
               <div className="bar-track">
                 <div

@@ -373,7 +373,7 @@ def _run_pipeline_on_df(
     #   ok | no_records | retrieval_failed | llm_unavailable | rag_unavailable
     if RAG_DIR.is_dir():
         try:
-            rag_query = _build_rag_query(impacts)
+            rag_query = _build_rag_query(impacts, target_summary)
             all_records = load_all_recovery_docs(RAG_DIR)
             recovery_records = lookup_keywords(rag_query, all_records, top_k=3)
         except Exception as exc:  # noqa: BLE001
@@ -437,22 +437,36 @@ def _context_window_filename(slice_df: pd.DataFrame, timestamp_col: str) -> str:
     return f"context_window_{times.min().strftime(fmt)}_{times.max().strftime(fmt)}.csv"
 
 
-def _build_rag_query(impacts: dict) -> str:
+def _build_rag_query(
+    impacts: dict,
+    target_summary: dict[str, float] | None = None,
+) -> str:
     """Build a keyword query string from the impacts dict for RAG retrieval.
 
     Extracts vocabulary from feature descriptions so that tokens match
     human-readable DOCX error text. Falls back to splitting the column name
     on underscores when no description is available.
 
-    Note: the FEATURES queried are the live top-ranked impacts for this
-    window, so retrieval follows what actually moved the window. The query
-    VOCABULARY, however, is the static feature-description text from
-    config.yaml, not the live sensor magnitudes - so lexical TF-IDF matching
-    can be vocabulary-adjacent. Semantic-embedding retrieval (contained to
-    lookup.py) is the planned upgrade; see deliverables/Week7.
+    When `target_summary` is given the query is scoped to the two
+    worst-performing targets (lowest measured window means), matching the
+    targets the LLM prompt focuses on. The FEATURES queried are the top entries
+    of ranked_feature_impacts, now ordered by LIVE CONTRIBUTION (current
+    normalised value x model weight) - so retrieval follows what actually moved
+    the window, not the features the model is merely most sensitive to. The
+    query VOCABULARY is still the static feature-description text from
+    config.yaml, not the live sensor magnitudes, so lexical TF-IDF matching can
+    be vocabulary-adjacent; semantic-embedding retrieval (contained to
+    lookup.py) is the planned upgrade. See deliverables/Week7.
     """
+    blocks = impacts.get("context", [])
+    if target_summary:
+        blocks = sorted(
+            blocks,
+            key=lambda b: target_summary.get(b["target"], float("inf")),
+        )[:2]
+
     tokens: set[str] = set()
-    for block in impacts.get("context", []):
+    for block in blocks:
         tokens.add(block["target"])
         for fi in block.get("ranked_feature_impacts", [])[:2]:
             description = fi.get("description", "")
