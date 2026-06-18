@@ -278,8 +278,14 @@ def _pull_slice(cfg: dict) -> pd.DataFrame:
     raise HTTPException(status_code=400, detail=f"unknown trigger.mode: {mode}")
 
 
-async def _read_upload_to_df(upload: UploadFile) -> pd.DataFrame:
+async def _read_upload_to_df(upload: UploadFile, *, skiprows: int = 0) -> pd.DataFrame:
     """Read a FastAPI UploadFile into a pandas DataFrame.
+
+    `skiprows` drops that many leading lines before the header row. Set it to
+    5 for raw WebDAQ acoustic exports, whose CSV opens with a device-info
+    preamble (device name, sample rate, start time, blank line) before the
+    real "Sample,Time (s),Acceleration ..." header. Defaults to 0 (the header
+    is the first line), which keeps already-clean uploads unchanged.
 
     Raises HTTPException(400) if the file is empty, can't be parsed as
     CSV, or parses to an empty DataFrame. Keeps the error messages
@@ -292,7 +298,7 @@ async def _read_upload_to_df(upload: UploadFile) -> pd.DataFrame:
             detail=f"uploaded file '{upload.filename}' is empty",
         )
     try:
-        df = pd.read_csv(io.BytesIO(contents))
+        df = pd.read_csv(io.BytesIO(contents), skiprows=skiprows)
     except Exception as exc:  # noqa: BLE001 — surface any pandas parse error
         raise HTTPException(
             status_code=400,
@@ -1330,6 +1336,13 @@ async def anomaly_train(
     train_ratio: float = Form(
         0.8,
         description="Non-cyclical only — fraction held for training."),
+    header_skiprows: int = Form(
+        0,
+        description=(
+            "Rows to skip before the CSV header. Set to 5 for raw WebDAQ "
+            "acoustic exports (non_cyclical), whose file starts with a "
+            "device-info preamble before the 'Sample,Time (s),Acceleration ...' "
+            "header. Leave 0 for already-clean CSVs.")),
 ) -> dict:
     """Train an anomaly model from uploaded CSVs and persist the bundle.
 
@@ -1378,7 +1391,7 @@ async def anomaly_train(
                 detail=("cyclical normal_only requires the 'file' form field "
                         "(the training CSV)."),
             )
-        df = await _read_upload_to_df(file)
+        df = await _read_upload_to_df(file, skiprows=header_skiprows)
         required = {machine_id_column, signal_column, timestamp_column}
         missing = required - set(df.columns)
         if missing:
@@ -1410,8 +1423,8 @@ async def anomaly_train(
                     "'clean_file' and 'anomaly_file' form fields."
                 ),
             )
-        clean_df = await _read_upload_to_df(clean_file)
-        anomaly_df = await _read_upload_to_df(anomaly_file)
+        clean_df = await _read_upload_to_df(clean_file, skiprows=header_skiprows)
+        anomaly_df = await _read_upload_to_df(anomaly_file, skiprows=header_skiprows)
         from pcil.utils.anomaly.non_cyclical.train import (
             train_from_clean_and_anomaly,
         )
@@ -1433,7 +1446,7 @@ async def anomaly_train(
                 detail=("irregular normal_only requires the 'file' form field "
                         "(the training CSV)."),
             )
-        df = await _read_upload_to_df(file)
+        df = await _read_upload_to_df(file, skiprows=header_skiprows)
         required = {machine_id_column, timestamp_column}
         if value_column:
             required.add(value_column)

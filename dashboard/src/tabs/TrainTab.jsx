@@ -10,6 +10,9 @@ export default function TrainTab() {
   const [anomalyFile, setAnomalyFile] = useState(null)
   const [valueColumn, setValueColumn] = useState('')
   const [windowSeconds, setWindowSeconds] = useState('1.0')
+  // Rows to skip before the CSV header. Raw WebDAQ acoustic exports
+  // (non_cyclical) carry a 5-line device-info preamble; clean CSVs start at 0.
+  const [headerSkiprows, setHeaderSkiprows] = useState('0')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [result, setResult] = useState(null)
@@ -39,6 +42,7 @@ export default function TrainTab() {
         anomalyFile,
         valueColumn: modelType === 'irregular' ? valueColumn : null,
         windowSeconds: modelType === 'irregular' ? windowSeconds : null,
+        headerSkiprows,
       })
       setResult(res)
     } catch (e) {
@@ -55,7 +59,15 @@ export default function TrainTab() {
         <div className="row">
           <label className="field">
             <span>Model type</span>
-            <select value={modelType} onChange={(e) => setModelType(e.target.value)}>
+            <select
+              value={modelType}
+              onChange={(e) => {
+                const t = e.target.value
+                setModelType(t)
+                // Raw WebDAQ acoustic files (non_cyclical) need 5; others 0.
+                setHeaderSkiprows(t === 'non_cyclical' ? '5' : '0')
+              }}
+            >
               <option value="cyclical">cyclical</option>
               <option value="non_cyclical">non_cyclical</option>
               <option value="irregular">irregular</option>
@@ -94,6 +106,20 @@ export default function TrainTab() {
             </>
           )}
         </div>
+
+        <label className="field">
+          <span>Header rows to skip</span>
+          <input
+            type="number"
+            min="0"
+            value={headerSkiprows}
+            onChange={(e) => setHeaderSkiprows(e.target.value)}
+          />
+          <span className="hint">
+            5 for raw WebDAQ acoustic exports (skips the device-info preamble
+            before the header); 0 for already-clean CSVs.
+          </span>
+        </label>
 
         {singleFile ? (
           <label className="field">

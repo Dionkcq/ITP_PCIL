@@ -217,3 +217,83 @@ def test_train_non_cyclical_handles_too_short_recording(
     assert r.status_code == 400
     detail = r.json()["detail"]
     assert "no windows" in detail.lower() or "window_size_rows" in detail
+
+
+# ─────────────────────────────────────────────────────────────────
+# WebDAQ preamble handling via header_skiprows
+# ─────────────────────────────────────────────────────────────────
+
+# A raw WebDAQ acoustic export opens with 5 metadata lines (device name,
+# job, sample rate, start time, blank) before the real
+# "Sample,Time (s),Acceleration ..." header. The CLI strips these with
+# load_acoustic(skiprows=5); header_skiprows gives the API the same knob.
+_WEBDAQ_PREAMBLE = (
+    b"webdaq-380092\n"
+    b"Job: HurcoVMX30UDi\n"
+    b"Sample Rate: 25600\n"
+    b"Start Time: Tue Mar 24 2026 11:30:18 am GMT+0800\n"
+    b"\n"
+)
+
+
+def _with_preamble(path):
+    with open(path, "rb") as f:
+        return _WEBDAQ_PREAMBLE + f.read()
+
+
+def test_train_non_cyclical_skips_webdaq_preamble(
+    client, non_cyclical_clean_tiny_path, non_cyclical_anomaly_tiny_path,
+    isolated_data_dir,
+):
+    """header_skiprows=5 lets the endpoint ingest raw WebDAQ exports whose
+    real header is on row 6, matching the CLI's load_acoustic(skiprows=5).
+    input_rows back to 100 proves the 5 preamble lines were dropped, not
+    counted as data."""
+    clean = _with_preamble(non_cyclical_clean_tiny_path)
+    anomaly = _with_preamble(non_cyclical_anomaly_tiny_path)
+    r = client.post(
+        "/anomaly/train",
+        data={
+            "model_type": "non_cyclical",
+            "training_mode": "clean_vs_anomaly",
+            "model_id": "test_webdaq",
+            "window_size_rows": "20",
+            "train_ratio": "1.0",
+            "header_skiprows": "5",
+        },
+        files={
+            "clean_file":   ("clean.csv",   clean,   "text/csv"),
+            "anomaly_file": ("anomaly.csv", anomaly, "text/csv"),
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "ok"
+    assert body["input_rows"] == 100
+    assert (isolated_data_dir / "non_cyclical_test_webdaq.pkl").is_file()
+
+
+def test_train_non_cyclical_preamble_without_skiprows_fails(
+    client, non_cyclical_clean_tiny_path, non_cyclical_anomaly_tiny_path,
+    isolated_data_dir,
+):
+    """The same preambled files WITHOUT header_skiprows must not train:
+    pandas reads the device-name line as the header, so the Acceleration
+    channels vanish. Documents why the knob is needed (default stays 0)."""
+    clean = _with_preamble(non_cyclical_clean_tiny_path)
+    anomaly = _with_preamble(non_cyclical_anomaly_tiny_path)
+    r = client.post(
+        "/anomaly/train",
+        data={
+            "model_type": "non_cyclical",
+            "training_mode": "clean_vs_anomaly",
+            "model_id": "test_webdaq_nofix",
+            "window_size_rows": "20",
+            "train_ratio": "1.0",
+        },
+        files={
+            "clean_file":   ("clean.csv",   clean,   "text/csv"),
+            "anomaly_file": ("anomaly.csv", anomaly, "text/csv"),
+        },
+    )
+    assert r.status_code != 200

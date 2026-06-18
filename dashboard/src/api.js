@@ -143,5 +143,9 @@ export function trainAnomaly(f) {
   // Irregular-only knobs; the endpoint has safe defaults for both.
   if (f.valueColumn) fd.append('value_column', f.valueColumn)
   if (f.windowSeconds) fd.append('window_seconds', f.windowSeconds)
+  // Rows to skip before the CSV header (5 for raw WebDAQ acoustic exports).
+  if (f.headerSkiprows != null && f.headerSkiprows !== '') {
+    fd.append('header_skiprows', f.headerSkiprows)
+  }
   return fetch(`${BASE}/anomaly/train`, { method: 'POST', body: fd }).then(handle)
 }
