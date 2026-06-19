@@ -49,7 +49,7 @@ import yaml
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 from pcil.adapter import adapt, column_names_from_config
 from pcil.preprocess import load_config, preprocess
@@ -142,6 +142,35 @@ def warm_postgres_rag() -> None:
             raise
 
 
+@app.on_event("startup")
+def seed_shop_floor_on_startup() -> None:
+    """Optionally seed the dockerized postgres shop-floor table from a CSV.
+
+    Enabled by PCIL_SEED_SHOP_FLOOR=true (the compose file sets it). Idempotent:
+    skips when the table already has rows, so restarts don't duplicate data. The
+    CSV / table / timestamp come from env so startup needn't know which recipe
+    will be used; they default to the bundled mock and the 'shop_floor' table.
+    A no-op for the CSV deployment and the test suite (flag unset).
+    """
+    if not _bool_env("PCIL_SEED_SHOP_FLOOR", False):
+        return
+    csv = os.environ.get("PCIL_SHOP_FLOOR_CSV", "data/mock_shop_floor.csv")
+    table = os.environ.get("PCIL_SHOP_FLOOR_TABLE", "shop_floor")
+    ts = os.environ.get("PCIL_SHOP_FLOOR_TIMESTAMP", "timestamp")
+    csv_path = Path(csv)
+    if not csv_path.is_absolute():
+        csv_path = PROJECT_ROOT / csv_path
+    if not csv_path.is_file():
+        return
+    try:
+        from pcil.shopfloor_db import seed_table_from_csv
+
+        seed_table_from_csv(csv_path, table, ts, if_empty=True)
+    except Exception:  # noqa: BLE001 - never block startup on seeding
+        if _bool_env("RAG_STRICT_STARTUP", False):
+            raise
+
+
 def attach_dashboard(app: FastAPI, dist_dir: Path | str | None = None) -> Path | None:
     """Serve the built dashboard at /dashboard if static assets are present.
 
@@ -186,7 +215,7 @@ class RunPipelineRequest(BaseModel):
             "Path to a config.yaml recipe. Relative paths resolve from "
             "the orchestrator's working directory (typically PCIL_dev/)."
         ),
-        examples=["machines/inkjet_printer/config.yaml"],
+        examples=["systems/inkjet_printer/config.yaml"],
     )
     persist: bool = Field(
         False,
@@ -199,11 +228,26 @@ class RunPipelineRequest(BaseModel):
 
 
 class SaveCsvRequest(BaseModel):
-    config_path: str = Field(..., examples=["machines/inkjet_printer/config.yaml"])
+    config_path: str = Field(..., examples=["systems/inkjet_printer/config.yaml"])
 
 
 class TrainBaselineRequest(BaseModel):
-    config_path: str = Field(..., examples=["machines/inkjet_printer/config.yaml"])
+    config_path: str = Field(..., examples=["systems/inkjet_printer/config.yaml"])
+
+
+class SeedShopFloorRequest(BaseModel):
+    config_path: str = Field(
+        ...,
+        description=(
+            "Recipe whose trigger.source (CSV) is loaded into trigger.table. "
+            "The recipe should set source_type: postgres."
+        ),
+        examples=["systems/inkjet_printer/config_postgres.yaml"],
+    )
+    force: bool = Field(
+        False,
+        description="If true, TRUNCATE and reload even when the table has rows.",
+    )
 
 
 class AnomalyScoreRequest(BaseModel):
@@ -230,6 +274,12 @@ class AnomalyScoreRequest(BaseModel):
 
 def _resolve_config(config_path: str) -> tuple[Path, dict]:
     """Resolve + load a config.yaml. Raises HTTPException on failure."""
+    # Back-compat: the recipe folder was renamed machines/ -> systems/.
+    # Accept the old "machines/..." spelling so paths hard-coded before the
+    # rename still resolve.
+    norm = config_path.replace("\\", "/")
+    if norm.startswith("machines/"):
+        config_path = "systems/" + norm[len("machines/"):]
     p = Path(config_path).expanduser()
     if not p.is_absolute():
         p = (Path.cwd() / p).resolve()
@@ -248,11 +298,38 @@ def _resolve_config(config_path: str) -> tuple[Path, dict]:
 def _pull_slice(cfg: dict) -> pd.DataFrame:
     """Pull the shop-floor slice described by cfg['trigger'].
 
-    For now the source is a CSV path (mock shop-floor). When the
-    engineering team's real DB comes online, replace this with a SQL
-    query — the rest of the pipeline doesn't change.
+    Two sources are supported:
+      - CSV (default): trigger.source points at a mock_shop_floor.csv.
+      - Postgres: trigger.source_type='postgres' queries the dockerized
+        shop-floor table (trigger.table) via DATABASE_URL, mapping the slice
+        mode to SQL. Downstream stages (preprocess -> adapter -> context
+        model) are identical either way.
     """
     trigger = cfg.get("trigger") or {}
+
+    # Postgres source: query the dockerized shop-floor table instead of a CSV.
+    # Connection from DATABASE_URL; the recipe names the table. CSV stays the
+    # default (source_type unset/csv) so existing recipes and tests are
+    # unchanged.
+    if (trigger.get("source_type") or "csv").lower() == "postgres":
+        from pcil.shopfloor_db import query_slice
+        try:
+            return query_slice(
+                trigger.get("table") or "shop_floor",
+                cfg["input"]["timestamp_column"],
+                mode=(trigger.get("mode") or "all").lower(),
+                start_time=trigger.get("start_time"),
+                end_time=trigger.get("end_time"),
+                last_n=trigger.get("last_n"),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001 - DB/connection errors -> 400
+            raise HTTPException(
+                status_code=400,
+                detail=f"postgres shop-floor query failed: {exc}",
+            ) from exc
+
     source = trigger.get("source")
     if not source:
         raise HTTPException(
@@ -312,8 +389,14 @@ def _pull_slice(cfg: dict) -> pd.DataFrame:
     raise HTTPException(status_code=400, detail=f"unknown trigger.mode: {mode}")
 
 
-async def _read_upload_to_df(upload: UploadFile) -> pd.DataFrame:
+async def _read_upload_to_df(upload: UploadFile, *, skiprows: int = 0) -> pd.DataFrame:
     """Read a FastAPI UploadFile into a pandas DataFrame.
+
+    `skiprows` drops that many leading lines before the header row. Set it to
+    5 for raw WebDAQ acoustic exports, whose CSV opens with a device-info
+    preamble (device name, sample rate, start time, blank line) before the
+    real "Sample,Time (s),Acceleration ..." header. Defaults to 0 (the header
+    is the first line), which keeps already-clean uploads unchanged.
 
     Raises HTTPException(400) if the file is empty, can't be parsed as
     CSV, or parses to an empty DataFrame. Keeps the error messages
@@ -326,7 +409,7 @@ async def _read_upload_to_df(upload: UploadFile) -> pd.DataFrame:
             detail=f"uploaded file '{upload.filename}' is empty",
         )
     try:
-        df = pd.read_csv(io.BytesIO(contents))
+        df = pd.read_csv(io.BytesIO(contents), skiprows=skiprows)
     except Exception as exc:  # noqa: BLE001 — surface any pandas parse error
         raise HTTPException(
             status_code=400,
@@ -632,26 +715,43 @@ def _run_pipeline_on_df(
         )
         artifact_paths = {"impacts_json": str(json_path), "model_pkl": str(pkl_path)}
 
+    # Window-level mean of each target (the real "how is this window doing"
+    # signal). Powers the dashboard KPI cards AND is fed to the RAG composer
+    # so the recommendation is grounded in measured performance instead of
+    # the regression intercept.
+    target_summary = {
+        t: float(golden_df[t].mean())
+        for t in targets
+        if t in golden_df.columns
+    }
+
     # --- RAG retrieval + LLM composition ---------------------------
-    # Retrieval and composition are guarded separately: retrieval is
-    # fully local (DOCX files on disk), composition needs the Gemini
-    # API. If only composition fails (no key, no internet, timeout),
-    # the operator still gets the retrieved recovery records.
+    # Retrieval and composition are guarded separately: retrieval is local
+    # (DOCX files for the file backend, or the Postgres hybrid store), while
+    # composition needs the Gemini API. If only composition fails (no key, no
+    # internet, timeout), the operator still gets the retrieved records.
+    #
+    # recommendation_status is the machine-readable outcome the dashboard
+    # reads (never the text):
+    #   ok | no_records | retrieval_failed | llm_unavailable | rag_unavailable
     rag_search_event_id: int | None = None
     rag_recommendation_id: int | None = None
+
+    # The file backend needs the DOCX directory mounted; the postgres backend
+    # serves records from its own tables, so the directory is not required.
     if _rag_backend() == "file" and not RAG_DIR.is_dir():
         recovery_records = []
+        recommendation_status = "rag_unavailable"
         operator_recommendation = (
             "RAG document directory not found. "
             f"Expected: {RAG_DIR}. "
             "Mount the data/RAG/ folder and restart the orchestrator."
         )
-        recommendation_source = "fallback"
-        recommendation_warnings = ["rag_directory_missing"]
     else:
         try:
             rag_query = _build_rag_query(
                 impacts,
+                target_summary,
                 signal_summary=signal_summary,
                 baseline_comparison=baseline_comparison,
             )
@@ -660,64 +760,47 @@ def _run_pipeline_on_df(
             )
         except Exception as exc:  # noqa: BLE001
             recovery_records = []
+            recommendation_status = "retrieval_failed"
             operator_recommendation = (
                 f"RAG retrieval failed ({type(exc).__name__}): {exc}. "
                 "Review the impacts data manually."
             )
-            recommendation_source = "retrieval_error"
-            recommendation_warnings = ["rag_retrieval_failed"]
         else:
             if not recovery_records:
-                operator_recommendation = compose_recommendation(
-                    impacts,
-                    recovery_records,
-                    signal_summary=signal_summary,
-                    baseline_comparison=baseline_comparison,
+                recommendation_status = "no_records"
+                operator_recommendation = (
+                    "No matching recovery records found. "
+                    "Review the feature impacts data manually."
                 )
-                recommendation_source = "no_records"
-                recommendation_warnings = ["no_matching_recovery_records"]
             else:
                 try:
                     operator_recommendation = compose_recommendation(
-                        impacts,
-                        recovery_records,
+                        impacts, recovery_records,
+                        target_summary=target_summary,
                         signal_summary=signal_summary,
                         baseline_comparison=baseline_comparison,
                     )
+                    recommendation_status = "ok"
                 except Exception as exc:  # noqa: BLE001
+                    recommendation_status = "llm_unavailable"
                     operator_recommendation = (
                         f"LLM composition failed ({type(exc).__name__}): {exc}. "
                         "Review the recovery records below manually."
                     )
-                    recommendation_source = "fallback"
-                    recommendation_warnings = ["llm_composition_failed"]
-                else:
-                    if operator_recommendation.startswith("LLM composition failed"):
-                        recommendation_source = "fallback"
-                        recommendation_warnings = ["llm_composition_failed"]
-                    elif operator_recommendation.startswith("LLM returned an empty response"):
-                        recommendation_source = "fallback"
-                        recommendation_warnings = ["llm_empty_response"]
-                    else:
-                        recommendation_source = "gemini"
-                        recommendation_warnings = []
+        # Best-effort audit of the recommendation (postgres backend only;
+        # returns None for the file backend).
         rag_recommendation_id = _audit_rag_recommendation(
             search_event_id=rag_search_event_id,
             impacts=impacts,
             signal_summary=signal_summary,
             baseline_comparison=baseline_comparison,
             operator_recommendation=operator_recommendation,
-            recommendation_source=recommendation_source,
-            recommendation_warnings=recommendation_warnings,
+            recommendation_source=recommendation_status,
+            recommendation_warnings=(
+                [] if recommendation_status == "ok" else [recommendation_status]
+            ),
         )
     # ---------------------------------------------------------------
-
-    # Window-level mean of each target, for the dashboard KPI cards.
-    target_summary = {
-        t: float(golden_df[t].mean())
-        for t in targets
-        if t in golden_df.columns
-    }
 
     return {
         "status": "ok",
@@ -729,8 +812,7 @@ def _run_pipeline_on_df(
         "baseline_comparison": baseline_comparison,
         "recovery_records": recovery_records,
         "operator_recommendation": operator_recommendation,
-        "recommendation_source": recommendation_source,
-        "recommendation_warnings": recommendation_warnings,
+        "recommendation_status": recommendation_status,
         "rag_backend": _rag_backend(),
         "rag_search_event_id": rag_search_event_id,
         "rag_recommendation_id": rag_recommendation_id,
@@ -751,6 +833,7 @@ def _context_window_filename(slice_df: pd.DataFrame, timestamp_col: str) -> str:
 
 
 def _feature_terms(feature: str) -> list[str]:
+    """Human-ish word tokens from a feature column name (drop short tokens)."""
     return [t for t in feature.lower().split("_") if len(t) > 2]
 
 
@@ -759,6 +842,11 @@ def _direction_for_feature(
     signal_summary: dict[str, Any] | None,
     baseline_comparison: dict[str, Any] | None,
 ) -> str | None:
+    """A direction word ('high'/'low'/'present'/'anomaly') for the feature.
+
+    Prefer the baseline deviation direction when a baseline exists; otherwise
+    fall back to feature-name heuristics on the current raw stats.
+    """
     baseline = (baseline_comparison or {}).get("features", {}).get(feature, {})
     direction = baseline.get("direction")
     if direction == "above_baseline":
@@ -781,45 +869,52 @@ def _direction_for_feature(
 
 def _build_rag_query(
     impacts: dict,
+    target_summary: dict[str, float] | None = None,
     *,
     signal_summary: dict[str, Any] | None = None,
     baseline_comparison: dict[str, Any] | None = None,
 ) -> str:
-    """Build a signal-aware keyword query for RAG retrieval.
+    """Build a signal-aware keyword query scoped to the worst targets.
 
-    Prefer live feature names and direction ("air pressure low",
-    "vibration high", "OEE degraded") over static config prose. This
-    keeps retrieval tied to what the current window is actually showing.
+    Combines main's contribution-based feature SELECTION (ranked_feature_impacts
+    is ordered by live contribution = value x weight) with Robin's signal-aware
+    VOCABULARY: each worst target is emitted with a 'degraded' marker when its
+    measured mean is low, and each top feature with a direction word
+    ('low'/'high'/'present'/'anomaly'), so the query matches the DOCX
+    error/cause text and the dense embeddings - not just static config prose.
+    Falls back to the feature description, then the bare name tokens.
     """
-    phrases: list[str] = []
-    target_stats = (signal_summary or {}).get("targets", {})
     context_blocks = impacts.get("context", [])
+    target_stats = (signal_summary or {}).get("targets", {})
 
+    # Scope to the two worst targets. Prefer the measured means in
+    # target_summary (the canonical signal); fall back to signal_summary's
+    # target means, then the regression intercept.
     def target_key(block: dict) -> float:
+        if target_summary is not None and block["target"] in target_summary:
+            return target_summary[block["target"]]
         mean = target_stats.get(block["target"], {}).get("mean")
         return mean if mean is not None else block.get("intercept", 1.0)
 
+    phrases: list[str] = []
     for block in sorted(context_blocks, key=target_key)[:2]:
         target = block["target"]
         status = target_stats.get(target, {}).get("status")
-        if status in {"degraded", "watch"}:
-            phrases.append(f"{target} degraded")
-        else:
-            phrases.append(target)
+        phrases.append(
+            f"{target} degraded" if status in {"degraded", "watch"} else target
+        )
 
-        ranked = block.get("ranked_feature_impacts", [])
-        negative = [fi for fi in ranked if fi.get("raw_impact_score", 0) < 0]
-        selected = (negative or ranked)[:3]
-        for fi in selected:
+        # Features are already ordered by live contribution; take the top few.
+        for fi in block.get("ranked_feature_impacts", [])[:3]:
             feature = fi["feature"]
             terms = _feature_terms(feature)
             direction = _direction_for_feature(
-                feature,
-                signal_summary,
-                baseline_comparison,
+                feature, signal_summary, baseline_comparison,
             )
             if direction:
                 phrases.append(" ".join([*terms, direction]))
+            elif fi.get("description"):
+                phrases.append(fi["description"].lower())
             else:
                 phrases.append(" ".join(terms))
 
@@ -842,6 +937,7 @@ def root() -> dict:
                 "POST /pipeline/run_csv",
                 "POST /pipeline/train_baseline",
                 "POST /pipeline/save_csv",
+                "POST /shopfloor/seed",
             ],
             "anomaly": [
                 "POST /anomaly/train",
@@ -891,7 +987,7 @@ async def run_pipeline_csv(
         description="Shop-floor CSV slice. Same schema config.yaml expects.",
     ),
     config_path: str = Form(
-        "machines/inkjet_printer/config.yaml",
+        "systems/inkjet_printer/config.yaml",
         description="Config recipe path — relative to orchestrator's CWD.",
     ),
     persist: bool = Form(
@@ -988,6 +1084,56 @@ def save_csv(req: SaveCsvRequest) -> dict:
     }
 
 
+@app.post("/shopfloor/seed", tags=["pipeline"])
+def seed_shop_floor(req: SeedShopFloorRequest) -> dict:
+    """Load a recipe's CSV (trigger.source) into its postgres shop-floor table.
+
+    For dev/demo deployments: populates the dockerized DB from the same mock CSV
+    the file path uses, so a postgres recipe (source_type: postgres) has data to
+    query. Idempotent unless force=true. Needs DATABASE_URL + psycopg.
+    """
+    _, cfg = _resolve_config(req.config_path)
+    trigger = cfg.get("trigger") or {}
+    source = trigger.get("source")
+    if not source:
+        raise HTTPException(
+            status_code=400,
+            detail="recipe is missing trigger.source (the CSV to seed from)",
+        )
+
+    # Resolve the CSV path with the same rules as _pull_slice's CSV branch.
+    source_path = Path(source)
+    if not source_path.is_absolute():
+        candidates = [
+            (PROJECT_ROOT / source_path).resolve(),
+            (cfg["_paths"]["config_dir"] / source_path).resolve(),
+        ]
+        source_path = next((p for p in candidates if p.is_file()), candidates[0])
+    if not source_path.is_file():
+        raise HTTPException(
+            status_code=404, detail=f"trigger.source not found: {source_path}"
+        )
+
+    table = trigger.get("table") or "shop_floor"
+    try:
+        from pcil.shopfloor_db import seed_table_from_csv
+
+        result = seed_table_from_csv(
+            source_path,
+            table,
+            cfg["input"]["timestamp_column"],
+            if_empty=not req.force,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=500,
+            detail=f"shop-floor seed failed ({type(exc).__name__}): {exc}",
+        ) from exc
+    return result
+
+
 # ─────────────────────────────────────────────────────────────
 # Config recipe endpoints (dashboard config editor)
 #
@@ -995,7 +1141,7 @@ def save_csv(req: SaveCsvRequest) -> dict:
 # never raw YAML. The server parses, validates, and re-serialises with
 # yaml.safe_dump, so a bad submission is rejected with a list of errors
 # instead of ever producing a corrupt file. Every overwrite stores a
-# timestamped backup under machines/<machine>/.backups/.
+# timestamped backup under systems/<system>/.backups/.
 # ─────────────────────────────────────────────────────────────
 
 @app.post("/rag/reindex", tags=["rag"])
@@ -1024,11 +1170,11 @@ def reindex_rag() -> dict:
     return {"rag_backend": "postgres", **result}
 
 
-# Root folder of per-machine recipes. CWD-relative to match how
-# config_path strings resolve everywhere else (dev: PCIL_dev/machines,
-# Docker: /app/machines). Mount the folder from the host in deployment
+# Root folder of per-system recipes. CWD-relative to match how
+# config_path strings resolve everywhere else (dev: PCIL_dev/systems,
+# Docker: /app/systems). Mount the folder from the host in deployment
 # (docker-compose does) so dashboard edits survive container recreation.
-MACHINES_ROOT = (Path.cwd() / "machines").resolve()
+SYSTEMS_ROOT = (Path.cwd() / "systems").resolve()
 
 _RECIPE_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_\-]{0,63}")
 
@@ -1042,7 +1188,7 @@ _EDITABLE_SECTIONS = (
 class SaveConfigRequest(BaseModel):
     path: str = Field(
         ...,
-        description="Recipe to edit, relative to machines/ — e.g. 'inkjet_printer/config.yaml'.",
+        description="Recipe to edit, relative to systems/ — e.g. 'inkjet_printer/config.yaml'.",
         examples=["inkjet_printer/config.yaml"],
     )
     config: dict = Field(
@@ -1059,31 +1205,33 @@ class SaveConfigRequest(BaseModel):
 
 
 def _safe_recipe_path(recipe: str, *, must_exist: bool = True) -> Path:
-    """Resolve a recipe reference and confine it to MACHINES_ROOT.
+    """Resolve a recipe reference and confine it to SYSTEMS_ROOT.
 
     Accepts 'inkjet_printer/config.yaml' or the run-endpoint style
-    'machines/inkjet_printer/config.yaml'. Rejects absolute paths,
+    'systems/inkjet_printer/config.yaml'. Rejects absolute paths,
     traversal ('..') and non-YAML suffixes so the editor endpoints can
-    never read or write outside the machines folder.
+    never read or write outside the systems folder.
     """
     rel = Path(recipe)
     if rel.is_absolute():
         raise HTTPException(
             status_code=400,
-            detail="config path must be relative to the machines/ folder",
+            detail="config path must be relative to the systems/ folder",
         )
-    if rel.parts and rel.parts[0] == "machines":
+    # Accept the new "systems/..." spelling and the pre-rename "machines/..."
+    # alias so older recipe references keep working.
+    if rel.parts and rel.parts[0] in ("systems", "machines"):
         rel = Path(*rel.parts[1:])
     if rel.suffix.lower() not in (".yaml", ".yml"):
         raise HTTPException(status_code=400, detail="config path must end in .yaml")
 
-    p = (MACHINES_ROOT / rel).resolve()
+    p = (SYSTEMS_ROOT / rel).resolve()
     try:
-        p.relative_to(MACHINES_ROOT)
+        p.relative_to(SYSTEMS_ROOT)
     except ValueError:
         raise HTTPException(
             status_code=400,
-            detail="config path must stay inside the machines/ folder",
+            detail="config path must stay inside the systems/ folder",
         ) from None
     if must_exist and not p.is_file():
         raise HTTPException(status_code=404, detail=f"config not found: {recipe}")
@@ -1114,11 +1262,13 @@ def _normalize_recipe(cfg: Any) -> Any:
     trigger = out.get("trigger")
     if isinstance(trigger, dict):
         trigger = dict(trigger)
-        for key in ("source", "mode", "start_time", "end_time"):
+        for key in ("source", "source_type", "table", "mode", "start_time", "end_time"):
             if isinstance(trigger.get(key), str):
                 trigger[key] = trigger[key].strip() or None
         if isinstance(trigger.get("mode"), str):
             trigger["mode"] = trigger["mode"].lower()
+        if isinstance(trigger.get("source_type"), str):
+            trigger["source_type"] = trigger["source_type"].lower()
         last_n = trigger.get("last_n")
         if isinstance(last_n, str) and last_n.strip().isdigit():
             trigger["last_n"] = int(last_n.strip())
@@ -1172,7 +1322,18 @@ def _validate_recipe(cfg: Any) -> tuple[list[str], list[str]]:
     if not isinstance(trigger, dict):
         errors.append("trigger section is required")
     else:
-        if not nonempty_str(trigger.get("source")):
+        source_type = trigger.get("source_type") or "csv"
+        if source_type not in ("csv", "postgres"):
+            errors.append(
+                f"trigger.source_type must be 'csv' or 'postgres' (got {source_type!r})"
+            )
+        if source_type == "postgres":
+            if not nonempty_str(trigger.get("table")):
+                errors.append(
+                    "trigger.table is required when source_type=postgres "
+                    "(the shop-floor table to query)"
+                )
+        elif not nonempty_str(trigger.get("source")):
             errors.append("trigger.source is required (path to the shop-floor CSV)")
         mode = trigger.get("mode") or "all"
         if mode not in ("all", "time_range", "last_n"):
@@ -1286,18 +1447,20 @@ def _validate_recipe(cfg: Any) -> tuple[list[str], list[str]]:
 
 @app.get("/configs", tags=["config"])
 def list_configs() -> dict:
-    """List the config recipes available under machines/."""
+    """List the config recipes available under systems/."""
     configs = []
-    if MACHINES_ROOT.is_dir():
-        for p in sorted(MACHINES_ROOT.glob("*/*.y*ml")):
+    if SYSTEMS_ROOT.is_dir():
+        for p in sorted(SYSTEMS_ROOT.glob("*/*.y*ml")):
             if not p.is_file():
                 continue
             configs.append({
+                "system": p.parent.name,
+                # "machine" kept as a back-compat alias for the pre-rename field.
                 "machine": p.parent.name,
                 "name": p.name,
                 "recipe": f"{p.parent.name}/{p.name}",
                 # The string /pipeline/run and /pipeline/run_csv accept.
-                "config_path": f"machines/{p.parent.name}/{p.name}",
+                "config_path": f"systems/{p.parent.name}/{p.name}",
             })
     return {"configs": configs}
 
@@ -1318,7 +1481,7 @@ def load_config_recipe(path: str) -> dict:
         )
     return {
         "recipe": f"{p.parent.name}/{p.name}",
-        "config_path": f"machines/{p.parent.name}/{p.name}",
+        "config_path": f"systems/{p.parent.name}/{p.name}",
         "config": cfg,
     }
 
@@ -1342,7 +1505,7 @@ def save_config_recipe(req: SaveConfigRequest) -> dict:
     Returns status='invalid' with the error list when validation fails
     (nothing is written). On success the YAML is regenerated with
     yaml.safe_dump — user input is never spliced into the file as text —
-    and the previous version is backed up to machines/<m>/.backups/.
+    and the previous version is backed up to systems/<m>/.backups/.
     """
     src = _safe_recipe_path(req.path)
     cfg = _normalize_recipe(req.config)
@@ -1399,16 +1562,18 @@ def save_config_recipe(req: SaveConfigRequest) -> dict:
     return {
         "status": "ok",
         "recipe": f"{dest.parent.name}/{dest.name}",
-        "config_path": f"machines/{dest.parent.name}/{dest.name}",
+        "config_path": f"systems/{dest.parent.name}/{dest.name}",
         "backup": backup_name,
         "warnings": warnings,
     }
 
 
 class CreateConfigRequest(BaseModel):
-    machine: str = Field(
+    # Accept both "system" (new) and "machine" (pre-rename alias) on input.
+    system: str = Field(
         ...,
-        description="New machine folder name (letters, digits, '_', '-').",
+        validation_alias=AliasChoices("system", "machine"),
+        description="New system folder name (letters, digits, '_', '-').",
         examples=["laser_welder"],
     )
     name: str = Field(
@@ -1423,19 +1588,19 @@ class CreateConfigRequest(BaseModel):
 
 @app.post("/configs/create", tags=["config"])
 def create_config_recipe(req: CreateConfigRequest) -> dict:
-    """Create a brand-new machine folder + recipe from the dashboard.
+    """Create a brand-new system folder + recipe from the dashboard.
 
     Same validation as /configs/save; refuses to overwrite an existing
-    recipe (use /configs/save for edits). The machine's output/ folder
+    recipe (use /configs/save for edits). The system's output/ folder
     is created automatically on the first pipeline run.
     """
-    machine = req.machine.strip()
+    system = req.system.strip()
     name = req.name.strip().removesuffix(".yaml").removesuffix(".yml") or "config"
-    if not _RECIPE_NAME_RE.fullmatch(machine):
+    if not _RECIPE_NAME_RE.fullmatch(system):
         raise HTTPException(
             status_code=400,
             detail=(
-                "machine must be 1-64 characters: letters, digits, '_' or '-' "
+                "system must be 1-64 characters: letters, digits, '_' or '-' "
                 "(no slashes, dots or spaces)"
             ),
         )
@@ -1450,12 +1615,12 @@ def create_config_recipe(req: CreateConfigRequest) -> dict:
     if errors:
         return {"status": "invalid", "errors": errors, "warnings": warnings}
 
-    dest = MACHINES_ROOT / machine / f"{name}.yaml"
+    dest = SYSTEMS_ROOT / system / f"{name}.yaml"
     if dest.is_file():
         raise HTTPException(
             status_code=409,
             detail=(
-                f"recipe {machine}/{name}.yaml already exists — "
+                f"recipe {system}/{name}.yaml already exists — "
                 "edit it via /configs/save instead"
             ),
         )
@@ -1473,8 +1638,8 @@ def create_config_recipe(req: CreateConfigRequest) -> dict:
 
     return {
         "status": "ok",
-        "recipe": f"{machine}/{name}.yaml",
-        "config_path": f"machines/{machine}/{name}.yaml",
+        "recipe": f"{system}/{name}.yaml",
+        "config_path": f"systems/{system}/{name}.yaml",
         "warnings": warnings,
     }
 
@@ -1490,9 +1655,9 @@ class DeleteConfigRequest(BaseModel):
 def delete_config_recipe(req: DeleteConfigRequest) -> dict:
     """Delete a recipe — recoverably.
 
-    The file is MOVED to machines/<machine>/.backups/<name>.deleted-<stamp>.yaml
+    The file is MOVED to systems/<system>/.backups/<name>.deleted-<stamp>.yaml
     rather than destroyed, so a wrong click can be undone from disk. A
-    machine whose last recipe is deleted simply disappears from /configs;
+    system whose last recipe is deleted simply disappears from /configs;
     its folder (with backups and outputs) stays on disk.
     """
     p = _safe_recipe_path(req.path)
@@ -1793,6 +1958,13 @@ async def anomaly_train(
     train_ratio: float = Form(
         0.8,
         description="Non-cyclical only — fraction held for training."),
+    header_skiprows: int = Form(
+        0,
+        description=(
+            "Rows to skip before the CSV header. Set to 5 for raw WebDAQ "
+            "acoustic exports (non_cyclical), whose file starts with a "
+            "device-info preamble before the 'Sample,Time (s),Acceleration ...' "
+            "header. Leave 0 for already-clean CSVs.")),
 ) -> dict:
     """Train an anomaly model from uploaded CSVs and persist the bundle.
 
@@ -1841,7 +2013,7 @@ async def anomaly_train(
                 detail=("cyclical normal_only requires the 'file' form field "
                         "(the training CSV)."),
             )
-        df = await _read_upload_to_df(file)
+        df = await _read_upload_to_df(file, skiprows=header_skiprows)
         required = {machine_id_column, signal_column, timestamp_column}
         missing = required - set(df.columns)
         if missing:
@@ -1873,8 +2045,8 @@ async def anomaly_train(
                     "'clean_file' and 'anomaly_file' form fields."
                 ),
             )
-        clean_df = await _read_upload_to_df(clean_file)
-        anomaly_df = await _read_upload_to_df(anomaly_file)
+        clean_df = await _read_upload_to_df(clean_file, skiprows=header_skiprows)
+        anomaly_df = await _read_upload_to_df(anomaly_file, skiprows=header_skiprows)
         from pcil.utils.anomaly.non_cyclical.train import (
             train_from_clean_and_anomaly,
         )
@@ -1896,7 +2068,7 @@ async def anomaly_train(
                 detail=("irregular normal_only requires the 'file' form field "
                         "(the training CSV)."),
             )
-        df = await _read_upload_to_df(file)
+        df = await _read_upload_to_df(file, skiprows=header_skiprows)
         required = {machine_id_column, timestamp_column}
         if value_column:
             required.add(value_column)

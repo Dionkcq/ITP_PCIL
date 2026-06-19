@@ -33,7 +33,7 @@ npm install
 npm run dev
 ```
 
-Open the URL Vite prints (default `http://localhost:5173`), pick a machine,
+Open the URL Vite prints (default `http://localhost:5173`), pick a system,
 and click **Run diagnosis**.
 
 If the orchestrator is on a different host/port (e.g. the NUC), point the

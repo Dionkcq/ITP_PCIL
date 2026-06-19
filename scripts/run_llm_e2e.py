@@ -45,7 +45,7 @@ from pcil.orchestrator import RAG_DIR, app  # noqa: E402
 # (_resolve_config resolves a relative path against cwd; trigger.source is
 # resolved against the config file's own directory, so an absolute config
 # path makes the whole run cwd-independent.)
-CONFIG_PATH = str(PCIL_DEV / "machines" / "inkjet_printer" / "config.yaml")
+CONFIG_PATH = str(PCIL_DEV / "systems" / "inkjet_printer" / "config.yaml")
 
 FALLBACK_MARKERS = (
     "RAG document directory not found",

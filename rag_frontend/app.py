@@ -15,7 +15,7 @@ app = Flask(__name__)
 
 ORCHESTRATOR_URL = os.environ.get("ORCHESTRATOR_URL", "http://localhost:8000")
 DEFAULT_CONFIG = os.environ.get(
-    "PCIL_CONFIG_PATH", "machines/inkjet_printer/config.yaml"
+    "PCIL_CONFIG_PATH", "systems/inkjet_printer/config.yaml"
 )
 FRONTEND_DIR = Path(__file__).resolve().parent
 

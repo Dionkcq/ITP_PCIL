@@ -62,7 +62,7 @@ export function saveCsv(configPath) {
 
 // ── Config recipes (Config tab editor) ─────────────────────────────
 
-// List the recipes under machines/.
+// List the recipes under systems/.
 export function listConfigs() {
   return fetch(`${BASE}/configs`).then(handle)
 }
@@ -91,12 +91,12 @@ export function saveConfigRecipe({ path, config, saveAs }) {
   }).then(handle)
 }
 
-// Create a brand-new machine folder + recipe. 409 if it already exists.
-export function createConfigRecipe({ machine, name, config }) {
+// Create a brand-new system folder + recipe. 409 if it already exists.
+export function createConfigRecipe({ system, name, config }) {
   return fetch(`${BASE}/configs/create`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ machine, name: name || 'config', config }),
+    body: JSON.stringify({ system, name: name || 'config', config }),
   }).then(handle)
 }
 
@@ -143,5 +143,9 @@ export function trainAnomaly(f) {
   // Irregular-only knobs; the endpoint has safe defaults for both.
   if (f.valueColumn) fd.append('value_column', f.valueColumn)
   if (f.windowSeconds) fd.append('window_seconds', f.windowSeconds)
+  // Rows to skip before the CSV header (5 for raw WebDAQ acoustic exports).
+  if (f.headerSkiprows != null && f.headerSkiprows !== '') {
+    fd.append('header_skiprows', f.headerSkiprows)
+  }
   return fetch(`${BASE}/anomaly/train`, { method: 'POST', body: fd }).then(handle)
 }

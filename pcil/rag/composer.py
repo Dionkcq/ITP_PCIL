@@ -1,8 +1,6 @@
 """
 RAG LLM composer - turns impacts + recovery records into an operator
 recommendation using the Gemini API.
-
-# TODO: when containerising, replace in-process cache with pgvector on PostgreSQL
 """
 from __future__ import annotations
 
@@ -22,6 +20,7 @@ def compose_recommendation(
     impacts: dict,
     records: list["RecoveryRecord"],
     *,
+    target_summary: dict[str, float] | None = None,
     signal_summary: dict | None = None,
     baseline_comparison: dict | None = None,
     model: str = "gemini-2.5-flash",
@@ -32,24 +31,48 @@ def compose_recommendation(
     ----------
     impacts:
         The live-generated impacts dict from train_context_model_from_df().
-        Must use the current schema: top-level "context" key with
-        "ranked_feature_impacts" lists (not the legacy "blocks" schema).
+        Current schema: top-level "context" with per-target
+        "ranked_feature_impacts" (ranked by live contribution).
     records:
-        Recovery records retrieved by lookup_keywords(). May be empty.
+        Recovery records retrieved by the RAG layer (file lookup or the
+        Postgres hybrid store). Must be non-empty (the orchestrator handles
+        the empty case before calling this).
+    target_summary:
+        Measured window-mean of each target (0-1). Used to pick the worst
+        targets and shown to the model, grounding the recommendation in
+        measured performance rather than the regression intercept.
+    signal_summary:
+        Optional current RAW feature/target statistics for this window
+        (mean/min/max/...). When present, feature lines also show the live
+        raw readings, not just the normalised contribution.
+    baseline_comparison:
+        Optional per-feature deviation vs the stored normal-operation
+        baseline ({"features": {feat: {z_score, direction}}}). When present,
+        feature lines note how far each feature sits from normal.
     model:
         Gemini model name. Defaults to "gemini-2.5-flash".
 
     Returns
     -------
     str
-        One concise paragraph for the operator, or a fallback string
-        if records are empty or the API call fails.
+        One concise paragraph for the operator.
+
+    Raises
+    ------
+    ValueError
+        If `records` is empty.
+    RuntimeError
+        If GEMINI_API_KEY is unset, the API call fails, or the model returns
+        an empty response. The orchestrator catches these and degrades to a
+        records-only response tagged recommendation_status="llm_unavailable",
+        keeping failures distinguishable from real recommendations.
     """
     if not records:
-        return (
-            "No matching recovery records found. "
-            "Review the feature impacts data manually."
-        )
+        # The orchestrator short-circuits the no-records case (and tags it
+        # recommendation_status="no_records"); this guard is for any direct
+        # caller. Raise rather than return a string so "no recommendation"
+        # is never mistaken for a real one.
+        raise ValueError("no recovery records to compose from")
 
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
@@ -61,106 +84,137 @@ def compose_recommendation(
     prompt = _build_prompt(
         impacts,
         records,
+        target_summary=target_summary,
         signal_summary=signal_summary,
         baseline_comparison=baseline_comparison,
     )
 
-    try:
-        from google import genai  # noqa: PLC0415
+    # No try/except here: failures (missing key, no internet, timeout,
+    # empty/safety-filtered response) propagate so the orchestrator can
+    # degrade with a machine-readable recommendation_status instead of the
+    # caller having to sniff the returned text for marker words.
+    from google import genai  # noqa: PLC0415
 
-        client = genai.Client(
-            api_key=api_key,
-            http_options={"timeout": _LLM_TIMEOUT_MS},
+    client = genai.Client(
+        api_key=api_key,
+        http_options={"timeout": _LLM_TIMEOUT_MS},
+    )
+    response = client.models.generate_content(model=model, contents=prompt)
+    if not response.text:
+        raise RuntimeError(
+            "Gemini returned an empty response (possibly safety-filtered)."
         )
-        response = client.models.generate_content(model=model, contents=prompt)
-        if not response.text:
-            # Safety-filtered or empty response — degrade like an API error.
-            return (
-                "LLM returned an empty response. "
-                "Review the recovery records below manually."
-            )
-        return response.text.strip()
-    except Exception as exc:  # noqa: BLE001
-        return (
-            f"LLM composition failed ({type(exc).__name__}): {exc}. "
-            "Review the recovery records below manually."
-        )
+    return response.text.strip()
 
 
 def _build_prompt(
     impacts: dict,
     records: list["RecoveryRecord"],
     *,
+    target_summary: dict[str, float] | None = None,
     signal_summary: dict | None = None,
     baseline_comparison: dict | None = None,
 ) -> str:
     """Construct the Gemini prompt from impacts and retrieved records.
 
-    Keeps total length under ~1 800 characters by truncating long
+    Worst-performing targets are chosen by their measured window mean
+    (`target_summary`) - the real "how is this window doing" signal - not the
+    regression intercept. The features shown are the largest LIVE CONTRIBUTORS
+    (contribution = current normalised value x model weight) to those worst
+    targets; each is enriched with its current RAW reading (`signal_summary`)
+    and its deviation from the stored normal baseline (`baseline_comparison`)
+    when those are available. The prompt forbids inventing numbers it was not
+    given. Total length is kept under ~1800 characters by truncating long
     recovery texts.
     """
     system_name = impacts.get("system", "unknown system")
-
-    # Identify the weakest targets from actual current target means when
-    # available. Fall back to intercept only for archived responses.
     context_blocks = impacts.get("context", [])
-    target_means = {
-        name: stats.get("mean")
-        for name, stats in (signal_summary or {}).get("targets", {}).items()
-    }
-    sorted_blocks = sorted(
-        context_blocks,
-        key=lambda b: (
-            target_means.get(b["target"])
-            if target_means.get(b["target"]) is not None
-            else b["intercept"]
-        ),
-    )
-    worst_two = sorted_blocks[:2]
-    target_lines = "\n".join(
-        (
-            f"  - {b['target']} (current mean: {target_means[b['target']]:.3f})"
-            if target_means.get(b["target"]) is not None
-            else f"  - {b['target']} (window intercept: {b['intercept']:.3f})"
-        )
-        for b in worst_two
-    )
 
-    # Collect top-ranked feature impact descriptions (deduplicated).
+    # --- Worst-performing targets -----------------------------------
+    if target_summary:
+        worst_two = sorted(
+            context_blocks,
+            key=lambda b: target_summary.get(b["target"], float("inf")),
+        )[:2]
+        target_lines = "\n".join(
+            f"  - {b['target']}: {target_summary.get(b['target'], float('nan')):.3f}"
+            for b in worst_two
+        )
+        targets_header = (
+            "Worst-performing targets this window (measured 0-1, lower = worse)"
+        )
+    else:
+        # Defensive fallback: the orchestrator normally passes target_summary.
+        worst_two = sorted(context_blocks, key=lambda b: b["intercept"])[:2]
+        target_lines = "\n".join(
+            f"  - {b['target']} (baseline {b['intercept']:.3f})"
+            for b in worst_two
+        )
+        targets_header = "Worst-performing targets (by regression baseline)"
+
+    # --- Top live contributors to the worst targets ----------------
+    # Pull features from the worst-performing blocks only and keep the three
+    # with the largest absolute LIVE CONTRIBUTION (current normalised value x
+    # model weight). Contribution, not weight alone, is what actually moved the
+    # target this window: a feature with a big weight but a near-zero value
+    # contributes almost nothing. ranked_feature_impacts already arrives sorted
+    # by |contribution|, but we re-sort defensively across the pooled blocks.
+    candidates: list[dict] = []
+    for block in worst_two:
+        candidates.extend(block.get("ranked_feature_impacts", []))
+    if not candidates:  # worst-two carried no impacts; fall back to all blocks
+        for block in context_blocks:
+            candidates.extend(block.get("ranked_feature_impacts", []))
+
+    def _abs_contribution(fi: dict) -> float:
+        # New schema carries "contribution"; fall back to the coefficient for
+        # archived impacts produced before live contribution existed.
+        return abs(fi.get("contribution", fi.get("raw_impact_score", 0.0)))
+
+    candidates.sort(key=_abs_contribution, reverse=True)
+
+    sig_features = (signal_summary or {}).get("features", {})
+    base_features = (baseline_comparison or {}).get("features", {})
+
     seen: set[str] = set()
     impact_lines: list[str] = []
-    for block in context_blocks:
-        for fi in block.get("ranked_feature_impacts", [])[:1]:
-            feat = fi["feature"]
-            if feat not in seen:
-                seen.add(feat)
-                desc = fi.get("description") or feat.replace("_", " ")
-                current = (signal_summary or {}).get("features", {}).get(feat, {})
-                baseline = (
-                    (baseline_comparison or {})
-                    .get("features", {})
-                    .get(feat, {})
+    for fi in candidates:
+        feat = fi["feature"]
+        if feat in seen:
+            continue
+        seen.add(feat)
+        desc = fi.get("description") or feat.replace("_", " ")
+
+        if "contribution" in fi:
+            parts = [
+                f"live contribution {fi['contribution']:+.3f} "
+                f"= value {fi.get('feature_value', float('nan')):.2f} "
+                f"x weight {fi.get('raw_impact_score', float('nan')):+.3f}"
+            ]
+        else:  # archived run without contribution: fall back to the weight
+            parts = [f"impact {fi.get('raw_impact_score', 0.0):+.3f}"]
+
+        current = sig_features.get(feat, {})
+        if current.get("mean") is not None:
+            cmin, cmax = current.get("min"), current.get("max")
+            if cmin is not None and cmax is not None:
+                parts.append(
+                    f"current raw mean {current['mean']:.3f}, "
+                    f"range {cmin:.3f}-{cmax:.3f}"
                 )
-                details = [f"score {fi['raw_impact_score']:+.3f}"]
-                if current.get("mean") is not None:
-                    details.append(
-                        f"current mean {current['mean']:.3f}, "
-                        f"range {current.get('min'):.3f}-{current.get('max'):.3f}"
-                    )
-                if baseline.get("z_score") is not None:
-                    details.append(
-                        f"{baseline['direction']} "
-                        f"(z {baseline['z_score']:+.2f})"
-                    )
-                impact_lines.append(
-                    f"  - {feat} ({'; '.join(details)}): {desc}"
-                )
-            if len(impact_lines) >= 3:
-                break
+            else:
+                parts.append(f"current raw mean {current['mean']:.3f}")
+
+        baseline = base_features.get(feat, {})
+        if baseline.get("z_score") is not None:
+            direction = str(baseline.get("direction", "off-baseline")).replace("_", " ")
+            parts.append(f"{direction} (z {baseline['z_score']:+.2f})")
+
+        impact_lines.append(f"  - {feat} ({'; '.join(parts)}): {desc}")
         if len(impact_lines) >= 3:
             break
 
-    # Format recovery records; truncate long recovery text.
+    # --- Recovery records (truncate long recovery text) -------------
     record_blocks: list[str] = []
     for i, rec in enumerate(records, 1):
         recovery_text = rec["recovery"]
@@ -178,14 +232,21 @@ def _build_prompt(
 
     return (
         f"Machine: {system_name}\n\n"
-        f"Worst-performing targets:\n{target_lines}\n\n"
-        f"Top contributing features:\n{impacts_text}\n\n"
-        f"Relevant recovery records:\n{records_text}\n\n"
-        "Task: Write one concise paragraph (3-5 sentences) for a factory "
-        "floor operator. State only what is supported by the current "
-        "numbers and recovery records. If the evidence is only a "
-        "correlation or the baseline comparison is unavailable, say so "
-        "plainly. Suggest which physical component to inspect first and "
-        "the most important recovery step from the records above. Use "
-        "plain language; avoid technical jargon or variable names."
+        f"{targets_header}:\n{target_lines}\n\n"
+        f"Features contributing most to the worst target(s) this window "
+        f"(live contribution = current normalised value x model weight; raw "
+        f"means and baseline z-scores, when shown, are the actual readings; "
+        f"positive contribution pushed the target up, negative pulled it "
+        f"down):\n{impacts_text}\n\n"
+        f"Relevant recovery records from the maintenance documents:\n"
+        f"{records_text}\n\n"
+        "Task: Using ONLY the information above, write a short paragraph "
+        "(2-4 sentences) for a factory-floor operator. Recommend which "
+        "recovery step from the records to try first and which component to "
+        "inspect, and refer to the worst-performing target(s) by name. If the "
+        "evidence is only correlational or no baseline comparison is shown, "
+        "say so plainly. Do NOT invent sensor readings, numeric thresholds, "
+        "severity levels, or causes that are not stated above; if the records "
+        "only partially match, say the match is approximate. Use plain "
+        "language and avoid variable names."
     )

@@ -1,0 +1,68 @@
+# ============================================================
+# PCIL Pipeline #1 — config_postgres.yaml  (Week-3 schema)
+# ============================================================
+# Same recipe as config.yaml, but the shop-floor slice is pulled from the
+# dockerized PostgreSQL service instead of a CSV.
+#
+#   trigger.source_type: postgres   -> _pull_slice queries the DB
+#   trigger.table:       shop_floor -> the table to read
+#   trigger.source:      data/mock_shop_floor.csv
+#                                    -> the CSV used to SEED that table
+#                                       (POST /shopfloor/seed, or auto-seed on
+#                                       startup when PCIL_SEED_SHOP_FLOOR=true)
+#
+# The DB connection comes from DATABASE_URL (set by docker-compose), so no
+# secrets live in this file. Downstream stages are identical to the CSV recipe.
+# ============================================================
+
+system: inkjet_printer
+
+pipeline:
+  output_dir: "output"
+
+# ── Trigger / slice parameters ──────────────────────────────
+# source_type=postgres maps the slice mode to SQL:
+#   all        -> SELECT * ... ORDER BY timestamp
+#   time_range -> ... WHERE timestamp BETWEEN start_time AND end_time
+#   last_n     -> ... ORDER BY timestamp DESC LIMIT last_n
+trigger:
+  source_type: postgres
+  table: shop_floor
+  source: "data/mock_shop_floor.csv"   # seed origin for /shopfloor/seed
+  mode: "all"
+  start_time: null              # ISO 8601 UTC, e.g. "2026-05-15T09:00:30+00:00"
+  end_time: null                # ISO 8601 UTC
+  last_n: null                  # positive integer
+
+# ── Input schema: shop-floor DataFrame slice ────────────────
+input:
+  timestamp_column: timestamp
+
+  numerical_features:
+    - air_pressure_low_ratio
+    - cycle_stop_present
+    - vibration
+    - acoustic_emission
+    - setpressure_cycle_count
+    - setvelo_mean
+    - cyclical_anomaly_score
+    - acoustic_anomaly_score
+
+  categorical_features: []
+
+  targets:
+    - availability
+    - performance
+    - quality
+    - oee
+
+# ── Feature descriptions (for the impacts JSON + LLM) ───────
+feature_descriptions:
+  air_pressure_low_ratio: "Proportion of operating time during which air pressure falls below the defined threshold."
+  cycle_stop_present: "Whether a cycle interruption event occurred during the observation window (0 or 1)."
+  vibration: "Aggregated vibration signal (RMS over the window) from the machine accelerometer."
+  acoustic_emission: "Aggregated acoustic emission signal (RMS over the window) from the AE sensor."
+  setpressure_cycle_count: "Number of distinct pressure setpoint changes observed in the window."
+  setvelo_mean: "Mean commanded velocity setpoint over the observation window."
+  cyclical_anomaly_score: "Anomaly score from the cyclical pipeline, aggregated to the canonical row rate."
+  acoustic_anomaly_score: "Anomaly score from the non-cyclical / acoustic pipeline, aggregated to the canonical row rate."

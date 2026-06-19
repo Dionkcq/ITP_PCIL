@@ -9,7 +9,7 @@ Run once from PCIL_dev/:
     python tests/fixtures/_generate.py
 
 Generated:
-    shop_floor_tiny.csv          — matches machines/inkjet_printer/config.yaml schema
+    shop_floor_tiny.csv          — matches systems/inkjet_printer/config.yaml schema
     cyclical_tiny.csv            — small cyclical signal for cyclical training tests
     non_cyclical_clean_tiny.csv  — clean acoustic-style recording
     non_cyclical_anomaly_tiny.csv — anomaly acoustic-style recording

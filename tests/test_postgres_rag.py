@@ -67,28 +67,29 @@ def test_bm25_cache_ranks_lexical_matches(monkeypatch):
     assert BM25IndexCache.hydrate([1])[0]["error"] == "Air pressure low"
 
 
-def test_bge_m3_wrapper_validates_dense_dimension(monkeypatch):
+def test_embedding_wrapper_validates_dense_dimension(monkeypatch):
     from pcil.rag.embeddings import EMBEDDING_DIM, EmbeddingModelCache
 
-    class FakeBGEM3:
-        def __init__(self, model_name, use_fp16=False):
+    # encode() dispatches on the model class being named "SentenceTransformer",
+    # so the fake must carry that exact name to exercise the real code path.
+    class SentenceTransformer:
+        def __init__(self, model_name):
             self.model_name = model_name
-            self.use_fp16 = use_fp16
 
         def encode(self, texts, **kwargs):
-            return {"dense_vecs": [[0.0] * EMBEDDING_DIM for _ in texts]}
+            return [[0.0] * EMBEDDING_DIM for _ in texts]
 
     monkeypatch.setitem(
         sys.modules,
-        "FlagEmbedding",
-        types.SimpleNamespace(BGEM3FlagModel=FakeBGEM3),
+        "sentence_transformers",
+        types.SimpleNamespace(SentenceTransformer=SentenceTransformer),
     )
     monkeypatch.setattr(EmbeddingModelCache, "_model", None)
     monkeypatch.setattr(EmbeddingModelCache, "_model_name", None)
 
     vector = EmbeddingModelCache.encode("warm up retrieval model")
 
-    assert len(vector) == 1024
+    assert len(vector) == EMBEDDING_DIM
 
 
 def test_rag_reindex_endpoint_uses_ingest_when_postgres(

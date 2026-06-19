@@ -51,8 +51,8 @@ def resolve_config_path(arg: str | None = None) -> Path:
         p = Path(arg)
         if p.is_file():
             return p.resolve()
-        return repo_root / "machines" / arg / "config.yaml"
-    return repo_root / "machines" / "inkjet_printer" / "config.yaml"
+        return repo_root / "systems" / arg / "config.yaml"
+    return repo_root / "systems" / "inkjet_printer" / "config.yaml"
 
 
 def load_config(config_path: Path) -> dict:
@@ -83,7 +83,13 @@ def build_preprocessor(numerical: list[str], categorical: list[str]) -> Pipeline
     """
     transformers = []
     if numerical:
-        transformers.append(("num", MinMaxScaler(), numerical))
+        # clip=True keeps transform() output inside [0, 1] even when a
+        # baseline-fitted scaler is reused on a live window whose values fall
+        # outside the baseline min/max. Without it, such windows would breach
+        # the adapter's [0, 1] invariant and 400. For the normal fit-on-window
+        # path (min->0, max->1) clipping is a no-op. The size of any excursion
+        # beyond the baseline is still carried in baseline_comparison z-scores.
+        transformers.append(("num", MinMaxScaler(clip=True), numerical))
     if categorical:
         transformers.append((
             "cat",
@@ -216,8 +222,8 @@ def main():
     )
     parser.add_argument(
         "--config", default=None,
-        help="Path to config.yaml or a machine name. "
-             "Defaults to machines/inkjet_printer/config.yaml.",
+        help="Path to config.yaml or a system name. "
+             "Defaults to systems/inkjet_printer/config.yaml.",
     )
     parser.add_argument(
         "--save-pipeline", action="store_true",

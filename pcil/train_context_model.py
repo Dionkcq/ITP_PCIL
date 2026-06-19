@@ -18,12 +18,17 @@ The impacts JSON follows the Week-3 schema agreed with Winardi on
 
 Each entry in `ranked_feature_impacts` carries: feature name, a one-line
 description (pulled from `config.yaml -> feature_descriptions`), the raw
-coefficient, a standardised share-of-explanation, and an absolute-magnitude
-rank within the target.
+coefficient (`raw_impact_score`) plus its standardised share
+(`standardized_impact_score`), the mean normalised feature value over the
+window (`feature_value`), the live contribution (`contribution` =
+value x weight) plus its standardised share (`standardized_contribution`),
+and a rank. Entries are ranked by absolute live contribution, so rank 1 is
+the feature that actually drove the target most this window - not merely the
+one the model is most sensitive to.
 
 Run from PCIL_dev/:
     python -m pcil.train_context_model                # default: inkjet_printer
-    python -m pcil.train_context_model oil_filler     # by machine name
+    python -m pcil.train_context_model oil_filler     # by system name
 """
 
 from __future__ import annotations
@@ -80,24 +85,50 @@ def train_context_model_from_df(
     feature_descriptions = cfg.get("feature_descriptions", {}) or {}
     system_name = cfg.get("system") or cfg.get("machine") or "unknown_system"
 
+    # Mean normalised feature value over the window. Features are MinMax-scaled
+    # to [0, 1] in preprocessing, so this is the "current normalised value" of
+    # each feature for this slice. X is aligned with `features` (the adapter
+    # builds it from golden_df[features] in order), so column j is features[j].
+    feature_means = X.mean(axis=0)
+
     context_blocks = []
     for i, target_name in enumerate(targets):
-        raw = {feat: float(coef) for feat, coef in zip(features, model.coef_[i])}
-        sum_abs = sum(abs(c) for c in raw.values()) or 1.0
+        coefs = [float(c) for c in model.coef_[i]]
 
-        # Rank by absolute magnitude (most-impactful feature is rank 1).
-        ranked = sorted(raw.items(), key=lambda kv: abs(kv[1]), reverse=True)
+        # Two views of "impact":
+        #   weight       = the regression coefficient (model sensitivity: how
+        #                  much the target moves per unit of the feature).
+        #                  Global, window-independent.
+        #   contribution = weight x mean normalised value. How much the feature
+        #                  actually pushed the target THIS window. For a linear
+        #                  model mean(prediction) = intercept + sum(contribution),
+        #                  so contribution is the feature's live additive share.
+        # Ranking is by |contribution| so rank 1 is what drove the current
+        # window, not just what the model is most sensitive to. The coefficient
+        # is kept (raw_/standardized_impact_score) for transparency.
+        sum_abs_coef = sum(abs(c) for c in coefs) or 1.0
+        contributions = [c * float(v) for c, v in zip(coefs, feature_means)]
+        sum_abs_contrib = sum(abs(c) for c in contributions) or 1.0
 
         ranked_impacts = [
             {
                 "feature": feat,
                 "description": feature_descriptions.get(feat, ""),
                 "raw_impact_score": coef,
-                "standardized_impact_score": coef / sum_abs,
-                "rank": rank,
+                "standardized_impact_score": coef / sum_abs_coef,
+                "feature_value": float(value),
+                "contribution": contribution,
+                "standardized_contribution": contribution / sum_abs_contrib,
             }
-            for rank, (feat, coef) in enumerate(ranked, start=1)
+            for feat, coef, value, contribution in zip(
+                features, coefs, feature_means, contributions
+            )
         ]
+
+        # Rank 1 = biggest live driver (largest absolute contribution).
+        ranked_impacts.sort(key=lambda r: abs(r["contribution"]), reverse=True)
+        for rank, row in enumerate(ranked_impacts, start=1):
+            row["rank"] = rank
 
         context_blocks.append({
             "target": target_name,
@@ -146,28 +177,28 @@ def save_artifacts(
 # CLI wrapper
 # ─────────────────────────────────────────────────────────────
 
-def _resolve_machine(arg: str | None) -> Path:
+def _resolve_system(arg: str | None) -> Path:
     repo_root = Path(__file__).resolve().parent.parent  # PCIL_dev/
     if arg:
         p = Path(arg)
         if p.is_file():
             return p.resolve()
-        return repo_root / "machines" / arg / "config.yaml"
-    return repo_root / "machines" / "inkjet_printer" / "config.yaml"
+        return repo_root / "systems" / arg / "config.yaml"
+    return repo_root / "systems" / "inkjet_printer" / "config.yaml"
 
 
 def main():
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
     arg = sys.argv[1] if len(sys.argv) > 1 else None
-    cfg_path = _resolve_machine(arg)
+    cfg_path = _resolve_system(arg)
     if not cfg_path.is_file():
         print(f"Config not found: {cfg_path}")
         raise SystemExit(1)
 
     cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
-    machine_dir = cfg_path.parent
-    output_dir = (machine_dir / cfg["pipeline"]["output_dir"]).resolve()
+    system_dir = cfg_path.parent
+    output_dir = (system_dir / cfg["pipeline"]["output_dir"]).resolve()
 
     csv_path = output_dir / "golden_dataframe.csv"
     if not csv_path.exists():
@@ -198,8 +229,9 @@ def main():
         print(f"  Target: {block['target']}   (intercept {block['intercept']:+.4f})")
         for fi in block["ranked_feature_impacts"]:
             print(f"    [{fi['rank']}] {fi['feature']:<28s} "
-                  f"raw={fi['raw_impact_score']:+.4f}  "
-                  f"std={fi['standardized_impact_score']:+.4f}")
+                  f"weight={fi['raw_impact_score']:+.4f}  "
+                  f"value={fi['feature_value']:.4f}  "
+                  f"contribution={fi['contribution']:+.4f}")
         print()
 
 

@@ -1,0 +1,55 @@
+# Build the LikeC4 interactive architecture site and publish it to GitHub Pages.
+# Source of truth: docs/c4/pcil.c4 (the same model the README PNGs come from).
+# Runs on any push that touches docs/c4/ (or this file), and on manual dispatch.
+name: Deploy C4 site (GitHub Pages)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/c4/**"
+      - ".github/workflows/c4-pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never run two Pages deploys at once.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      # LikeC4 is run via npx only - it is NOT a project dependency.
+      # `build` produces a static SPA (no headless browser needed).
+      # --base must match the Pages project sub-path (/<repo>/).
+      - name: Build LikeC4 site
+        run: npx -y likec4@1.58.0 build docs/c4 -o _site --base /ITP_PCIL/
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

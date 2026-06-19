@@ -45,7 +45,7 @@ Orchestrator** (`pcil/orchestrator.py`). It exposes endpoints for:
   `/configs/create`, `/configs/delete`) — the dashboard's Config tab is
   built on these; saves are validated server-side and backed up, deletes
   are recoverable (moved to `.backups/`), so the YAML can't be corrupted
-  or lost from the UI, and new machines can be onboarded without
+  or lost from the UI, and new systems can be onboarded without
   touching the repo.
 
 Anomaly detection is split into three specialist subpackages —
@@ -54,6 +54,109 @@ uniformly-sampled signals like acoustic vibration), and irregular
 (irregularly-sampled data like event logs and on-change sensors). The
 engineering team's ingestion calls `/anomaly/score` over HTTP and
 writes the returned score into the shop-floor database themselves.
+
+---
+
+## Architecture (C4)
+
+PCIL is documented with the [C4 model](https://c4model.com) - diagrams at increasing
+zoom: **Context** (the system and who it talks to), **Container** (the runnable pieces),
+and **Component** (the code modules inside a container), plus a **runtime data-flow** that
+shows the contract handed between pipeline stages. The *Code* level (L4) is intentionally
+skipped - the source is the truth at that zoom. The diagrams below are generated from a
+single [LikeC4](https://likec4.dev) model, [`docs/c4/pcil.c4`](docs/c4/pcil.c4) - edit it
+and re-export the PNGs with the steps in [`docs/c4/README.md`](docs/c4/README.md). You
+can also **browse the interactive version** at
+[dionkcq.github.io/ITP_PCIL](https://dionkcq.github.io/ITP_PCIL/) - auto-deployed from
+`docs/c4/` via GitHub Pages.
+
+> **Scope.** These reflect the `postgre_implementation` branch: a **dockerized PostgreSQL
+> backend** (pgvector hybrid RAG + a shop-floor table) added alongside the file/CSV path,
+> which stays the default. It is still a **single** orchestrator container (pipeline +
+> anomaly together) - the pipeline/anomaly container split (P2) remains in the
+> [Roadmap](#roadmap) below.
+
+### Level 1 - System context
+
+![Level 1 - System context](docs/c4/index.png)
+
+### Level 2 - Containers
+
+![Level 2 - Containers](docs/c4/containers.png)
+
+### Level 3 - Components (the orchestrator's internals)
+
+Inside the single FastAPI container, the request coordinator (`orchestrator.py`) wires
+together the pipeline stages, the anomaly subpackages, and the config-recipe manager.
+Data passes between stages **in memory**; nothing is written to disk during a normal run.
+
+![Level 3 - Components](docs/c4/components.png)
+
+Notes:
+- The **dashboard** (a separate container, shown at Level 2 above) is served by this
+  process via FastAPI `StaticFiles` at `/dashboard`, but it is not a code component of the
+  pipeline.
+- The optional Flask `rag_frontend/` demo UI is **not** part of the deployed image and is
+  omitted here.
+
+### Runtime data-flow - the stage contracts
+
+The diagnosis path (`POST /pipeline/run`). Each arrow is the contract the previous stage
+produces and the next one accepts - "stage 1 produces this, stage 2 consumes it":
+
+![Runtime data-flow - stage contracts](docs/c4/dataflow.png)
+
+`target_summary` (from the context-model stage) is also fed into the composer, so the
+recommendation is grounded in measured performance, and it drives the dashboard KPI cards.
+On this branch the composer is additionally fed `signal_summary` (current raw feature
+stats) and `baseline_comparison` (deviation vs a trained normal-operation baseline).
+
+#### Hybrid RAG retrieval (PostgreSQL backend)
+
+With `RAG_BACKEND=postgres`, retrieval fuses lexical **BM25** and dense **pgvector**
+candidates with Reciprocal Rank Fusion, using `all-MiniLM-L6-v2` embeddings (384-dim,
+CPU/offline-friendly). The file backend (TF-IDF + cosine over the DOCX files) stays
+available and is the default outside Docker.
+
+![Hybrid RAG retrieval](docs/c4/raghybrid.png)
+
+#### Anomaly scoring (separate engineer-facing API)
+
+Anomaly detection is **input to output only** - PCIL never writes to the shop-floor data.
+The engineer calls the API and writes the returned score back themselves (only they know
+the row mapping):
+
+![Anomaly scoring flow](docs/c4/anomalyflow.png)
+
+#### Contract table
+
+| Stage | Input | Output contract |
+|---|---|---|
+| Trigger (`_pull_slice`) | config recipe (trigger mode + source) | shop-floor slice DataFrame from a CSV, or from the PostgreSQL `shop_floor` table when the recipe sets `source_type: postgres` |
+| Preprocess (Pipeline 1) | slice + recipe schema | Golden DataFrame: timestamp, targets (passthrough), features scaled 0-1 (baseline scaler reused when one is trained) |
+| Adapter | Golden DataFrame | `X` (rows x features), `y` (rows x targets), names; raises if features leave 0-1 |
+| Context model (Pipeline 2) | `X`, `y` | impacts dict (per-target `ranked_feature_impacts` ranked by live contribution = value x weight) + fitted model; orchestrator also computes `target_summary`, `signal_summary`, `baseline_comparison` |
+| RAG retrieval | query from worst-target names + live signal directions | top-k records; file backend = TF-IDF + cosine, postgres backend = BM25 + pgvector + Reciprocal Rank Fusion |
+| LLM composer (Pipeline 3) | impacts + records + target_summary + signal_summary + baseline_comparison | `operator_recommendation` + `recommendation_status` (ok / no_records / retrieval_failed / llm_unavailable / rag_unavailable) |
+| Response | all of the above | JSON: impacts, target_summary, signal_summary, baseline_comparison, recovery_records, operator_recommendation, recommendation_status, rag_backend, pipeline_warnings, artifacts |
+| `/anomaly/score` | raw time-series rows + `model_type` (+ `model_id`) | `anomaly_score` per cycle/window (+ `threshold`, `is_anomaly`) |
+| `/anomaly/train` | uploaded CSV(s) + params | persisted `.pkl` bundle under `data/` |
+| `/pipeline/train_baseline` | recipe pointing at normal-operation data | baseline preprocessor + raw-stat artifacts for deviation reporting |
+| `/shopfloor/seed` | recipe with `source_type: postgres` | loads the recipe's CSV into the PostgreSQL `shop_floor` table (idempotent) |
+| `/rag/reindex` | (postgres backend) | re-ingests the DOCX folder into the pgvector store |
+
+### Roadmap
+
+- **PostgreSQL source (P1) - DONE on this branch.** `_pull_slice` has a SQL branch
+  (`shopfloor_db.py` via `psycopg`); a recipe with `source_type: postgres` reads the
+  `shop_floor` table over `DATABASE_URL` instead of a CSV, with the slice mode mapped to
+  SQL. The CSV path stays the default. The same pgvector PostgreSQL service backs the
+  hybrid RAG store.
+- **Pipeline / anomaly container split (P2) - still pending.** The single orchestrator
+  container would become **two** - a lightweight **Pipeline service** and an **Anomaly
+  service** (with `torch` only in the anomaly image) - so projects that do not need anomaly
+  detection can run the pipeline alone. When that lands, add a second Container diagram
+  showing both services + the database.
 
 ---
 
@@ -246,7 +349,7 @@ upload.
 
 ```bash
 curl -X POST http://localhost:8000/pipeline/run_csv \
-     -F "config_path=machines/inkjet_printer/config.yaml" \
+     -F "config_path=systems/inkjet_printer/config.yaml" \
      -F "persist=false" \
      -F "file=@shop_floor.csv"
 ```
@@ -290,7 +393,7 @@ PCIL_dev/
 │       └── irregular/               # event-log / on-change-sensor pipeline
 │           ├── slice.py, features.py, model.py, train.py, score.py
 │           └── README.md            # design rationale + tuning notes
-├── machines/inkjet_printer/         # one folder per machine
+├── systems/inkjet_printer/         # one folder per system
 │   ├── config.yaml                  # recipe — trigger, schema, feature descriptions
 │   └── output/                      # generated golden DF / impacts JSON / .pkl
 ├── scripts/
@@ -483,7 +586,7 @@ docker save -o pcil_image.tar ghcr.io/dionkcq/itp_pcil:latest
 
 ---
 
-## Status (NUC-test prep, 10 June 2026)
+## Status
 
 | Component | Status |
 |---|---|

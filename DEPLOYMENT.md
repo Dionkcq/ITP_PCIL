@@ -31,7 +31,7 @@ Expected layout before starting:
 <deploy folder>/
 ├── docker-compose.yml
 ├── .env                     # optional — see step 3
-├── machines/                # config recipes (in the repo; or provided with data/)
+├── systems/                # config recipes (in the repo; or provided with data/)
 │   └── inkjet_printer/
 │       └── config.yaml              # the pipeline "recipe" — editable, see section 7
 └── data/                    # provided by the team
@@ -42,9 +42,9 @@ Expected layout before starting:
         └── *.docx
 ```
 
-A repo clone already contains `machines/`; only `data/` has to be added.
+A repo clone already contains `systems/`; only `data/` has to be added.
 If either folder lives somewhere else, set `PCIL_DATA_DIR=<path>` /
-`PCIL_MACHINES_DIR=<path>` in `.env` instead of moving it.
+`PCIL_SYSTEMS_DIR=<path>` in `.env` instead of moving it.
 
 ## 2. Get the image
 
@@ -132,14 +132,14 @@ diagnosis back in the response.
 
 ### 5a. Run the pipeline on the configured source
 
-Uses the slice recipe baked into `machines/inkjet_printer/config.yaml`
+Uses the slice recipe baked into `systems/inkjet_printer/config.yaml`
 (which points at `data/mock_shop_floor.csv` inside the mounted data
 folder):
 
 ```bash
 curl -X POST http://localhost:8000/pipeline/run \
      -H "Content-Type: application/json" \
-     -d '{"config_path": "machines/inkjet_printer/config.yaml", "persist": false}'
+     -d '{"config_path": "systems/inkjet_printer/config.yaml", "persist": false}'
 ```
 
 ### 5b. Run the pipeline on an uploaded CSV
@@ -151,10 +151,31 @@ targets):
 
 ```bash
 curl -X POST http://localhost:8000/pipeline/run_csv \
-     -F "config_path=machines/inkjet_printer/config.yaml" \
+     -F "config_path=systems/inkjet_printer/config.yaml" \
      -F "persist=false" \
      -F "file=@shop_floor_slice.csv"
 ```
+
+### 5c. Run the pipeline from the dockerized PostgreSQL shop-floor table
+
+The compose stack includes a PostgreSQL service. To pull the slice from the
+database instead of a CSV, use the postgres recipe
+`systems/inkjet_printer/config_postgres.yaml` (it sets `source_type: postgres`
+and `table: shop_floor`). On startup the app seeds that table from the mounted
+`mock_shop_floor.csv` — idempotent, so it is skipped once the table has rows;
+set `PCIL_SEED_SHOP_FLOOR=false` to disable, or re-seed manually with
+`POST /shopfloor/seed`. Then:
+
+```bash
+curl -X POST http://localhost:8000/pipeline/run \
+     -H "Content-Type: application/json" \
+     -d '{"config_path": "systems/inkjet_printer/config_postgres.yaml", "persist": false}'
+```
+
+The slice mode maps to SQL (`all` → `ORDER BY timestamp`; `time_range` →
+`WHERE timestamp BETWEEN`; `last_n` → `ORDER BY timestamp DESC LIMIT`).
+Everything downstream (preprocess → impacts → RAG → recommendation) is
+identical to the CSV path.
 
 ### Response shape (both variants)
 
@@ -197,7 +218,7 @@ Base URL: `http://<host>:8000`
 | GET | `/configs/load` | Load a recipe as structured data |
 | POST | `/configs/validate` | Dry-run validation of an edited recipe (nothing written) |
 | POST | `/configs/save` | Validate + save a recipe (timestamped backup kept on overwrite) |
-| POST | `/configs/create` | Create a brand-new machine folder + recipe (never overwrites) |
+| POST | `/configs/create` | Create a brand-new system folder + recipe (never overwrites) |
 | POST | `/configs/delete` | Delete a recipe (recoverable — moved into `.backups/`, not destroyed) |
 | GET | `/anomaly/models` | List the trained `.pkl` bundles present in `data/` |
 | POST | `/rag/reindex` | Re-ingest DOCX recovery records into PostgreSQL and refresh BM25/vector RAG |
@@ -237,7 +258,7 @@ from `/docs`.
 
 ## 7. Changing the pipeline recipe (e.g. a new sensor column)
 
-`machines/inkjet_printer/config.yaml` is the pipeline's recipe: where the
+`systems/inkjet_printer/config.yaml` is the pipeline's recipe: where the
 shop-floor slice comes from, how to slice it (all rows / time range /
 last N), which columns are features and targets. Because the folder is
 mounted from the host, **recipe changes need no image rebuild and no
@@ -249,12 +270,12 @@ Two ways to change it:
   as a form — add/remove feature columns with descriptions, change targets
   or the slice mode. Every save is validated server-side first (an invalid
   recipe is rejected with the reasons listed, the file is never corrupted)
-  and the previous version is backed up to `machines/<machine>/.backups/`.
+  and the previous version is backed up to `systems/<system>/.backups/`.
   "Save as new" creates a separate recipe (e.g. `config_test2.yaml`) that
   becomes selectable in the Diagnosis tab without touching the original.
-  The tab's **New machine** section creates a whole new machine folder
-  (`machines/<name>/<recipe>.yaml`) from the current form — onboard a
-  second machine without touching the repository at all. One machine can
+  The tab's **New system** section creates a whole new system folder
+  (`systems/<name>/<recipe>.yaml`) from the current form — onboard a
+  second system without touching the repository at all. One system can
   hold several recipes for different purposes ("Save as new"); deleting a
   recipe moves it into `.backups/` rather than destroying it, so a wrong
   click is recoverable from disk.

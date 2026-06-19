@@ -65,7 +65,7 @@ RUN apt-get update \
 
 # Application code.
 COPY pcil/ ./pcil/
-COPY machines/ ./machines/
+COPY systems/ ./systems/
 
 # Built dashboard from stage 1. FastAPI mounts this directory at
 # /dashboard via attach_dashboard(); the operator opens

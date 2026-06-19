@@ -18,4 +18,4 @@ Thumbs.db
 
 # Don't bake docs into the image.
 *.md
-!machines/*/README.md
+!systems/*/README.md

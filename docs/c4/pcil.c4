@@ -1,0 +1,187 @@
+// PCIL architecture - LikeC4 model (postgre_implementation branch).
+// Adds the dockerized PostgreSQL backend (pgvector hybrid RAG + a shop-floor
+// table) on top of the main-branch model. One model -> multiple views;
+// relationships are declared at the deepest level and LikeC4 rolls them up.
+// Regenerate the PNGs with:  npx -y likec4@latest export png -o .
+// (see README.md in this folder)
+
+specification {
+  element person {
+    style {
+      shape person
+    }
+  }
+  element system
+  element container
+  element component
+  element database {
+    style {
+      shape cylinder
+    }
+  }
+  tag external
+}
+
+model {
+  operator = person 'Operator / engineer' {
+    description 'Runs diagnoses, uploads CSVs, trains and scores anomaly models'
+  }
+
+  gemini = system 'Google Gemini API' {
+    #external
+    description 'LLM (gemini-2.5-flash) that writes the operator recommendation'
+  }
+  shop = system 'Shop-floor data source' {
+    #external
+    description 'Engineer-owned. A CSV slice in ./data, OR rows in the dockerized PostgreSQL shop_floor table'
+  }
+  docs = system 'Maintenance documents' {
+    #external
+    description 'DOCX error / cause / recovery references, ingested into the RAG store'
+  }
+
+  pcil = system 'PCIL' {
+    description 'Production Context Intelligence Layer'
+
+    dashboard = container 'Operator dashboard' {
+      technology 'React 18 + Vite SPA'
+      description 'KPI rings, anomaly chart, ranked impacts, baseline comparison, recommendation, config editor'
+    }
+
+    orchestrator = container 'PCIL Job Orchestrator' {
+      technology 'Python 3.12, FastAPI'
+      description 'Pipeline + anomaly + RAG + config APIs; serves the dashboard'
+
+      api = component 'API + coordinator' {
+        technology 'orchestrator.py / FastAPI'
+        description 'Routes for /pipeline, /anomaly, /rag, /shopfloor, /configs; wires stages in memory; computes signal_summary + baseline_comparison'
+      }
+      trigger = component 'Trigger / slice' {
+        technology 'trigger.py'
+        description 'Selects the window: all / time_range / last_n'
+      }
+      shopdb = component 'Shop-floor DB source' {
+        technology 'shopfloor_db.py / psycopg'
+        description 'Seeds + queries the PostgreSQL shop_floor table; slice mode -> SQL'
+      }
+      prep = component 'Preprocess (Pipeline 1)' {
+        technology 'preprocess.py / scikit-learn'
+        description 'sklearn Pipeline + ColumnTransformer to the Golden DataFrame; reuses the baseline scaler when present'
+      }
+      adapter = component 'Adapter' {
+        technology 'adapter.py'
+        description 'Golden DataFrame to X / y arrays'
+      }
+      ctxmodel = component 'Context model (Pipeline 2)' {
+        technology 'train_context_model.py'
+        description 'Multi-target LinearRegression; impacts ranked by live contribution (value x weight)'
+      }
+      rag = component 'RAG retrieval (hybrid)' {
+        technology 'rag/lookup.py (file) + rag/hybrid.py'
+        description 'File: TF-IDF + cosine. Postgres: BM25 + pgvector dense, fused with Reciprocal Rank Fusion'
+      }
+      embed = component 'Embeddings' {
+        technology 'rag/embeddings.py / sentence-transformers'
+        description 'all-MiniLM-L6-v2 (384-dim, local CPU); dense vectors for pgvector'
+      }
+      composer = component 'LLM composer (Pipeline 3)' {
+        technology 'rag/composer.py / google-genai'
+        description 'Builds the grounded prompt (targets, live contributions, raw stats, baseline) and calls Gemini'
+      }
+      anomaly = component 'Anomaly detection' {
+        technology 'utils/anomaly/*'
+        description 'cyclical / non_cyclical / irregular over AnomalyModel + PerMachineNormaliser'
+      }
+      cfg = component 'Config recipe manager' {
+        technology 'orchestrator.py'
+        description 'Validate / save / create / delete recipes'
+      }
+    }
+
+    postgres = database 'PostgreSQL (pgvector)' {
+      technology 'pgvector/pgvector:pg16 (docker-compose)'
+      description 'shop_floor table + RAG records/embeddings (vector 384) + search/recommendation audit'
+    }
+    recipes = container 'Config recipes' {
+      technology 'YAML files (mounted ./systems)'
+      description 'Per-system trigger + schema + feature descriptions'
+    }
+    rtdata = container 'Runtime data' {
+      technology 'Files (mounted ./data)'
+      description 'RAG .docx, .pkl anomaly bundles, mock_shop_floor.csv'
+    }
+  }
+
+  // Relationships (deepest level; LikeC4 aggregates them upward per view)
+  operator -> dashboard 'Uses'
+  dashboard -> api 'Calls /pipeline, /anomaly, /rag, /configs'
+  api -> trigger 'Pull slice'
+  trigger -> shop 'Reads CSV slice'
+  trigger -> shopdb 'Postgres source'
+  shopdb -> postgres 'Seed + SELECT slice'
+  api -> prep 'Preprocess slice'
+  prep -> adapter 'Golden DataFrame'
+  adapter -> ctxmodel 'X / y arrays'
+  api -> rag 'Retrieve records'
+  rag -> docs 'Reads .docx (file backend / ingest)'
+  rag -> embed 'Encode query (postgres backend)'
+  rag -> postgres 'BM25 + pgvector retrieval + audit'
+  api -> composer 'Compose recommendation'
+  composer -> gemini 'Prompt'
+  api -> anomaly 'Score / train'
+  anomaly -> rtdata 'Reads / writes .pkl bundles'
+  api -> cfg 'Manage recipes'
+  cfg -> recipes 'Reads / writes YAML'
+}
+
+views {
+  view index {
+    title 'PCIL - System Context (Level 1)'
+    include *
+  }
+
+  view containers of pcil {
+    title 'PCIL - Containers (Level 2)'
+    include *
+  }
+
+  view components of orchestrator {
+    title 'Orchestrator - Components (Level 3)'
+    include *
+  }
+
+  dynamic view dataflow {
+    title 'Runtime data-flow (POST /pipeline/run)'
+    operator -> api 'POST /pipeline/run (config recipe)'
+    api -> trigger 'pull slice'
+    trigger -> shopdb 'postgres source'
+    shopdb -> postgres 'SELECT slice'
+    api -> prep 'preprocess -> Golden DataFrame'
+    prep -> adapter 'X / y'
+    adapter -> ctxmodel 'fit -> impacts (live contribution) + target_summary'
+    api -> rag 'retrieve records'
+    rag -> postgres 'BM25 + pgvector + RRF'
+    api -> composer 'compose (grounded prompt)'
+    composer -> gemini 'prompt'
+    api -> operator 'JSON: impacts + signal_summary + baseline + recommendation + status'
+  }
+
+  dynamic view raghybrid {
+    title 'Hybrid RAG retrieval (RAG_BACKEND=postgres)'
+    api -> rag 'query from worst targets + live signals'
+    rag -> embed 'encode query'
+    rag -> postgres 'pgvector dense + BM25 lexical candidates'
+    rag -> composer 'fuse (RRF) -> top-k recovery records'
+    composer -> gemini 'grounded prompt'
+  }
+
+  dynamic view anomalyflow {
+    title 'Anomaly scoring - input to output only (POST /anomaly/score)'
+    operator -> api 'POST /anomaly/score (raw rows + model_type)'
+    api -> anomaly 'dispatch by model_type'
+    anomaly -> rtdata 'load matching .pkl bundle'
+    anomaly -> api 'anomaly_score (+ threshold, is_anomaly)'
+    api -> operator 'returns scores'
+    operator -> shop 'engineer writes the scores back themselves'
+  }
+}

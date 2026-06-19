@@ -1,4 +1,4 @@
-"""BGE-M3 embedding cache for PostgreSQL RAG retrieval."""
+"""Embedding cache for PostgreSQL RAG retrieval (default: all-MiniLM-L6-v2)."""
 
 from __future__ import annotations
 
@@ -7,12 +7,17 @@ import threading
 from typing import Iterable
 
 
-DEFAULT_EMBEDDING_MODEL = "BAAI/bge-m3"
-EMBEDDING_DIM = 1024
+# Default to a small, CPU/offline-friendly model for the NUC. all-MiniLM-L6-v2
+# is ~88MB and emits 384-dim dense vectors. RAG_EMBEDDING_MODEL can point at a
+# different model (e.g. BAAI/bge-m3, 1024-dim, ~2.27GB), but the pgvector column
+# width is fixed to EMBEDDING_DIM by migration 001 — switching to a model with a
+# different dimension means updating both EMBEDDING_DIM and that migration.
+DEFAULT_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+EMBEDDING_DIM = 384
 
 
 class EmbeddingModelCache:
-    """Lazy singleton around BGE-M3 with an explicit warm-up hook."""
+    """Lazy singleton around the embedding model with an explicit warm-up hook."""
 
     _lock = threading.Lock()
     _model = None
@@ -77,7 +82,8 @@ class EmbeddingModelCache:
         for vector in vectors:
             if len(vector) != EMBEDDING_DIM:
                 raise RuntimeError(
-                    f"BGE-M3 returned {len(vector)} dimensions; expected {EMBEDDING_DIM}"
+                    f"embedding model returned {len(vector)} dimensions; "
+                    f"expected {EMBEDDING_DIM}"
                 )
         return vectors[0] if single else vectors
 

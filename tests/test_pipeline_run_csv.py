@@ -8,7 +8,7 @@ is wired in correctly.
 
 import io
 
-DEFAULT_CONFIG = "machines/inkjet_printer/config.yaml"
+DEFAULT_CONFIG = "systems/inkjet_printer/config.yaml"
 
 
 def test_run_csv_with_valid_shop_floor_returns_impacts(
@@ -110,6 +110,9 @@ def test_run_csv_returns_rag_recommendation_when_rag_dir_present(
         orch, "lookup_keywords",
         lambda query, records, top_k=3: records[:top_k],
     )
+    # The composer receives target_summary plus the signal_summary /
+    # baseline_comparison grounding kwargs; accept any kwargs so this mock
+    # does not couple to the exact signature.
     monkeypatch.setattr(
         orch, "compose_recommendation",
         lambda impacts, records, **kwargs: "Mocked operator recommendation.",
@@ -124,8 +127,8 @@ def test_run_csv_returns_rag_recommendation_when_rag_dir_present(
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["operator_recommendation"] == "Mocked operator recommendation."
-    assert body["recommendation_source"] == "gemini"
-    assert body["recommendation_warnings"] == []
+    assert body["recommendation_status"] == "ok"
+    # Robin's grounding evidence travels in the response alongside impacts.
     assert "signal_summary" in body
     assert "baseline_comparison" in body
     assert len(body["recovery_records"]) == 1
@@ -154,7 +157,7 @@ def test_run_csv_keeps_records_when_llm_fails(
         "source_doc": "Inkjet.docx",
     }]
 
-    def _composer_boom(impacts, records):
+    def _composer_boom(impacts, records, **kwargs):
         raise RuntimeError("GEMINI_API_KEY environment variable is not set.")
 
     monkeypatch.setattr(orch, "RAG_DIR", fake_rag_dir)
@@ -178,28 +181,32 @@ def test_run_csv_keeps_records_when_llm_fails(
     # Records survive the composer failure.
     assert len(body["recovery_records"]) == 1
     assert body["recovery_records"][0]["error"] == "Print head clog"
-    # Recommendation degrades with an honest, correctly-attributed message.
+    # Recommendation degrades with an honest, correctly-attributed message
+    # AND a machine-readable status (no string-sniffing needed).
     assert "LLM composition failed" in body["operator_recommendation"]
-    assert body["recommendation_source"] == "fallback"
-    assert "llm_composition_failed" in body["recommendation_warnings"]
+    assert body["recommendation_status"] == "llm_unavailable"
     # Pipelines #1/#2 unaffected.
     assert body["impacts"]["system"] == "inkjet_printer"
 
 
-def test_run_csv_marks_no_records_structurally(
+def test_run_csv_no_records_when_lookup_empty(
     client, shop_floor_tiny_path, monkeypatch, tmp_path,
 ):
-    """When retrieval runs but finds no matching records, the response
-    should carry a machine-readable no_records source instead of asking
-    the frontend to parse recommendation text."""
+    """Retrieval runs but finds nothing: the composer must NOT be called,
+    recovery_records is empty, and the status is the machine-readable
+    'no_records' (distinct from an LLM failure)."""
     import pcil.orchestrator as orch
 
     fake_rag_dir = tmp_path / "RAG"
     fake_rag_dir.mkdir()
 
+    def _composer_must_not_run(*_args, **_kwargs):
+        raise AssertionError("composer must not run when there are no records")
+
     monkeypatch.setattr(orch, "RAG_DIR", fake_rag_dir)
     monkeypatch.setattr(orch, "load_all_recovery_docs", lambda _path: [])
     monkeypatch.setattr(orch, "lookup_keywords", lambda query, records, top_k=3: [])
+    monkeypatch.setattr(orch, "compose_recommendation", _composer_must_not_run)
 
     with open(shop_floor_tiny_path, "rb") as f:
         r = client.post(
@@ -209,15 +216,16 @@ def test_run_csv_marks_no_records_structurally(
         )
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["recommendation_source"] == "no_records"
-    assert "no_matching_recovery_records" in body["recommendation_warnings"]
     assert body["recovery_records"] == []
+    assert body["recommendation_status"] == "no_records"
+    assert "No matching recovery records" in body["operator_recommendation"]
 
 
 def test_run_csv_marks_retrieval_error_structurally(
     client, shop_floor_tiny_path, monkeypatch, tmp_path,
 ):
-    """Retrieval failures should not be conflated with LLM fallback."""
+    """Retrieval failures must not be conflated with an LLM fallback:
+    a lookup exception yields recommendation_status='retrieval_failed'."""
     import pcil.orchestrator as orch
 
     fake_rag_dir = tmp_path / "RAG"
@@ -238,18 +246,17 @@ def test_run_csv_marks_retrieval_error_structurally(
         )
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["recommendation_source"] == "retrieval_error"
-    assert "rag_retrieval_failed" in body["recommendation_warnings"]
+    assert body["recommendation_status"] == "retrieval_failed"
     assert "RAG retrieval failed" in body["operator_recommendation"]
 
 
 def test_run_csv_falls_back_when_rag_dir_missing(
     client, shop_floor_tiny_path, monkeypatch, tmp_path,
 ):
-    """Error-path counterpart: when RAG_DIR does not exist on disk, the
-    orchestrator must NOT call the loader/composer and must return a
-    fallback recommendation string + an empty recovery_records list.
-    Impacts JSON should still be present (Pipelines #1 and #2 are
+    """Error-path counterpart: when RAG_DIR does not exist on disk (file
+    backend), the orchestrator must NOT call the loader/composer and must
+    return a fallback recommendation string + an empty recovery_records
+    list. Impacts JSON should still be present (Pipelines #1 and #2 are
     independent of RAG)."""
     import pcil.orchestrator as orch
 
@@ -266,6 +273,5 @@ def test_run_csv_falls_back_when_rag_dir_missing(
     body = r.json()
     assert body["recovery_records"] == []
     assert "RAG document directory not found" in body["operator_recommendation"]
-    assert body["recommendation_source"] == "fallback"
-    assert "rag_directory_missing" in body["recommendation_warnings"]
+    assert body["recommendation_status"] == "rag_unavailable"
     assert body["impacts"]["system"] == "inkjet_printer"

@@ -53,9 +53,15 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-pcil}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-pcil}
       RAG_BACKEND: ${RAG_BACKEND:-postgres}
       RAG_AUTO_INGEST: ${RAG_AUTO_INGEST:-true}
-      RAG_EMBEDDING_MODEL: ${RAG_EMBEDDING_MODEL:-BAAI/bge-m3}
+      RAG_EMBEDDING_MODEL: ${RAG_EMBEDDING_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
       RAG_RRF_K: ${RAG_RRF_K:-60}
       RAG_STRICT_STARTUP: ${RAG_STRICT_STARTUP:-false}
+      # Auto-seed the shop-floor table from the mounted CSV on startup so a
+      # postgres recipe (systems/inkjet_printer/config_postgres.yaml) has data
+      # to query. Idempotent: skipped once the table already has rows.
+      PCIL_SEED_SHOP_FLOOR: ${PCIL_SEED_SHOP_FLOOR:-true}
+      PCIL_SHOP_FLOOR_TABLE: ${PCIL_SHOP_FLOOR_TABLE:-shop_floor}
+      PCIL_SHOP_FLOOR_CSV: ${PCIL_SHOP_FLOOR_CSV:-data/mock_shop_floor.csv}
     volumes:
       # Runtime data the image does NOT contain (shipped separately, not in
       # git): mock_shop_floor.csv, <model_type>_<model_id>.pkl bundles,
@@ -66,8 +72,8 @@ services:
       # restarts and apply on the next API call — no rebuild needed. The
       # image carries a baked-in copy as fallback, but mounting is the
       # supported deployment path.
-      - ${PCIL_MACHINES_DIR:-./machines}:/app/machines
-      # Keep Hugging Face model files across container rebuilds/restarts.
+      - ${PCIL_SYSTEMS_DIR:-./systems}:/app/systems
+      # Keep Hugging Face embedding-model files across container rebuilds.
       - hf_cache:/root/.cache/huggingface
     restart: unless-stopped
     healthcheck:

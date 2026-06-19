@@ -16,14 +16,14 @@ Pipeline #1 is responsible for fixing the cause, not us.
 Usage:
     from adapter import adapt, column_names_from_config
 
-    cfg    = yaml.safe_load(open("machines/inkjet_printer/config.yaml"))
-    df     = pd.read_csv("machines/inkjet_printer/output/golden_dataframe.csv")
+    cfg    = yaml.safe_load(open("systems/inkjet_printer/config.yaml"))
+    df     = pd.read_csv("systems/inkjet_printer/output/golden_dataframe.csv")
     targets, features = column_names_from_config(cfg, df)
     bundle = adapt(df, targets, features)
 
 CLI demo (run from PCIL_dev/):
     python pcil/adapter.py                # default: inkjet_printer
-    python pcil/adapter.py oil_filler     # by machine name
+    python pcil/adapter.py oil_filler     # by system name
 """
 
 from __future__ import annotations
@@ -132,15 +132,15 @@ def column_names_from_config(
 # Demo / smoke test
 # ─────────────────────────────────────────────────────────────────────
 
-def _resolve_machine(arg: str | None) -> Path:
+def _resolve_system(arg: str | None) -> Path:
     """Resolve a CLI arg → config.yaml path."""
     repo_root = Path(__file__).resolve().parent.parent  # PCIL_dev/
     if arg:
         p = Path(arg)
         if p.is_file():
             return p.resolve()
-        return repo_root / "machines" / arg / "config.yaml"
-    return repo_root / "machines" / "inkjet_printer" / "config.yaml"
+        return repo_root / "systems" / arg / "config.yaml"
+    return repo_root / "systems" / "inkjet_printer" / "config.yaml"
 
 
 if __name__ == "__main__":
@@ -150,13 +150,13 @@ if __name__ == "__main__":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
     arg = sys.argv[1] if len(sys.argv) > 1 else None
-    cfg_path = _resolve_machine(arg)
+    cfg_path = _resolve_system(arg)
     if not cfg_path.is_file():
         print(f"[demo] Config not found: {cfg_path}")
         raise SystemExit(1)
 
-    machine_dir = cfg_path.parent
-    output_dir  = machine_dir / yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["pipeline"]["output_dir"]
+    system_dir = cfg_path.parent
+    output_dir  = system_dir / yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["pipeline"]["output_dir"]
     csv_path    = output_dir / "golden_dataframe.csv"
 
     if not csv_path.exists():
@@ -173,7 +173,7 @@ if __name__ == "__main__":
     print("-" * 60)
     print("ADAPTER STUB - demo run")
     print("-" * 60)
-    print(f"Machine (config folder): {machine_dir.name}")
+    print(f"System (config folder): {system_dir.name}")
     print(f"Input  Golden DataFrame: {df.shape[0]} rows x {df.shape[1]} cols")
     print(f"Output X (features):     shape {bundle['X'].shape}")
     print(f"Output y (targets):      shape {bundle['y'].shape}")
