@@ -10,7 +10,9 @@
 #   5. Open http://localhost:8000/dashboard/  (API docs at /docs)
 #
 # Variables (read from .env next to this file):
-#   PCIL_IMAGE     image to run     (default ghcr.io/dionkcq/itp_pcil:latest)
+#   PCIL_IMAGE     image to run     (default ghcr.io/dionkcq/itp_pcil:postgres
+#                                    — the postgre_implementation image; main's
+#                                    CSV build stays at :latest)
 #   PCIL_PORT      host port        (default 8000)
 #   PCIL_DATA_DIR  host data folder (default ./data)
 #   GEMINI_API_KEY Gemini key       (default empty -> fallback recommendation)
@@ -37,7 +39,7 @@ services:
   pcil:
     # Prefer pulling the prebuilt image; `docker compose build` rebuilds it
     # from this repo instead (multi-stage build, needs internet for npm+pip).
-    image: ${PCIL_IMAGE:-ghcr.io/dionkcq/itp_pcil:latest}
+    image: ${PCIL_IMAGE:-ghcr.io/dionkcq/itp_pcil:postgres}
     build: .
     container_name: pcil-orchestrator
     depends_on:
