@@ -1,0 +1,36 @@
+# PCIL Anomaly service — the torch image (PCIL_SERVICE=anomaly).
+# ---------------------------------------------------------------
+# Serves ONLY /anomaly/* (train / score / models). No dashboard, RAG, DB or
+# LLM. Runs pcil/anomaly_app.py, which imports only the anomaly stack.
+#     docker compose -f docker-compose.split.yml up -d --build
+
+FROM python:3.12-slim
+
+# libgomp1 for scikit-learn. transformers/tokenizers are NOT installed here, so
+# no Rust toolchain is needed (unlike the full image).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# CPU-only torch wheel first (the default PyPI torch bundles CUDA, ~GB). The
+# requirements install then sees torch==2.12.0 already satisfied.
+COPY requirements-anomaly.txt ./
+RUN pip install --no-cache-dir torch==2.12.0 --index-url https://download.pytorch.org/whl/cpu \
+    && pip install --no-cache-dir -r requirements-anomaly.txt
+
+# Application code. anomaly_app imports only pcil.anomaly_api + pcil.runtime +
+# the anomaly subpackages; the rest of pcil/ is present but never imported.
+COPY pcil/ ./pcil/
+
+ENV PCIL_PROJECT_ROOT=/app
+ENV PCIL_SERVICE=anomaly
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
+# Mount the host data/ for the .pkl bundles (read at score time, written at train time).
+VOLUME ["/app/data"]
+EXPOSE 8000
+
+CMD ["uvicorn", "pcil.anomaly_app:app", "--host", "0.0.0.0", "--port", "8000"]

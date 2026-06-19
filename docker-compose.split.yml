@@ -1,0 +1,96 @@
+# PCIL split deployment (P2) — pipeline + anomaly as separate containers.
+# ------------------------------------------------------------------------
+#   docker compose -f docker-compose.split.yml up -d --build
+#
+# The lightweight pipeline service (no torch) serves the dashboard + /pipeline,
+# /configs, /shopfloor and the file/TF-IDF RAG, and proxies /anomaly/* to the
+# anomaly service (torch). Both share the postgres service for shop-floor data.
+# Projects that do not need anomaly detection can run just `postgres` + `pipeline`.
+#
+# The single-container build stays in docker-compose.yml (the full :postgres
+# image, which also has the pgvector hybrid RAG).
+#
+# Variables (read from .env next to this file):
+#   POSTGRES_PASSWORD     required
+#   PCIL_PORT             host port for the pipeline service (default 8000)
+#   PCIL_DATA_DIR         host data folder (default ./data)
+#   PCIL_PIPELINE_IMAGE   default ghcr.io/dionkcq/itp_pcil:pipeline
+#   PCIL_ANOMALY_IMAGE    default ghcr.io/dionkcq/itp_pcil:anomaly
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: pcil-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-pcil}
+      POSTGRES_USER: ${POSTGRES_USER:-pcil}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pcil_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pcil} -d ${POSTGRES_DB:-pcil}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  pipeline:
+    image: ${PCIL_PIPELINE_IMAGE:-ghcr.io/dionkcq/itp_pcil:pipeline}
+    build:
+      context: .
+      dockerfile: Dockerfile.pipeline
+    container_name: pcil-pipeline
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${PCIL_PORT:-8000}:8000"
+    environment:
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-pcil}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-pcil}
+      # Lightweight pipeline uses the file/TF-IDF RAG (no embeddings, no torch).
+      RAG_BACKEND: file
+      # Forward /anomaly/* to the anomaly service so the dashboard's Anomaly tab
+      # keeps working same-origin.
+      ANOMALY_SERVICE_URL: http://anomaly:8000
+      # Seed the shop-floor table from the mounted CSV (idempotent).
+      PCIL_SEED_SHOP_FLOOR: ${PCIL_SEED_SHOP_FLOOR:-true}
+      PCIL_SHOP_FLOOR_TABLE: ${PCIL_SHOP_FLOOR_TABLE:-shop_floor}
+      PCIL_SHOP_FLOOR_CSV: ${PCIL_SHOP_FLOOR_CSV:-data/mock_shop_floor.csv}
+    volumes:
+      - ${PCIL_DATA_DIR:-./data}:/app/data
+      - ${PCIL_SYSTEMS_DIR:-./systems}:/app/systems
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  anomaly:
+    image: ${PCIL_ANOMALY_IMAGE:-ghcr.io/dionkcq/itp_pcil:anomaly}
+    build:
+      context: .
+      dockerfile: Dockerfile.anomaly
+    container_name: pcil-anomaly
+    # Engineer-facing API. Not exposed on the host by default — the pipeline
+    # proxies to it over the internal network. Uncomment to call it directly:
+    # ports:
+    #   - "8001:8000"
+    environment:
+      PCIL_PROJECT_ROOT: /app
+    volumes:
+      # Anomaly bundles (.pkl) live in data/ (read at score, written at train).
+      - ${PCIL_DATA_DIR:-./data}:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  pcil_pgdata:

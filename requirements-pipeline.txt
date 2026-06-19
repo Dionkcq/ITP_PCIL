@@ -1,0 +1,27 @@
+# PCIL pipeline service — lightweight pinned lock (PCIL_SERVICE=pipeline).
+# ----------------------------------------------------------------------
+# NO torch / sentence-transformers / transformers / rank-bm25: the pipeline
+# image runs the file/TF-IDF RAG backend. For the pgvector hybrid RAG use the
+# full image (requirements.txt). Pins mirror requirements.txt.
+
+# Pipeline #1 / #2
+pandas==2.3.2
+numpy==2.4.4
+scikit-learn==1.8.0
+scipy==1.17.1
+joblib==1.5.3
+PyYAML==6.0.3
+
+# Orchestrator (Week-3)
+fastapi==0.136.3
+uvicorn[standard]==0.47.0
+pydantic==2.13.4
+python-multipart==0.0.29
+
+# Shop-floor Postgres source (psycopg) + LLM + file-RAG document parsing
+psycopg[binary]==3.2.13
+google-genai==2.8.0
+python-docx==1.2.0
+
+# Reverse-proxy /anomaly/* to the anomaly service
+httpx==0.28.1

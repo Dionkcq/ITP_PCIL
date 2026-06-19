@@ -184,4 +184,24 @@ views {
     api -> operator 'returns scores'
     operator -> shop 'engineer writes the scores back themselves'
   }
+
+  // P2 container split (docker-compose.split.yml): the pipeline runs as a
+  // lightweight torch-free container that proxies /anomaly/* to a separate
+  // anomaly container (torch). Both share the postgres service. `api` lives in
+  // the pipeline container, `anomaly` in the anomaly container.
+  dynamic view splitdeploy {
+    title 'Split deployment (P2): lightweight pipeline + anomaly containers'
+    operator -> dashboard 'open (served by the pipeline container, no torch)'
+    dashboard -> api 'POST /pipeline/run'
+    api -> shopdb 'postgres source'
+    shopdb -> postgres 'SELECT slice'
+    api -> rag 'file / TF-IDF RAG (this container has no embeddings)'
+    api -> composer 'compose'
+    composer -> gemini 'prompt'
+    dashboard -> api 'POST /anomaly/score'
+    api -> anomaly 'proxy to the ANOMALY container (ANOMALY_SERVICE_URL)'
+    anomaly -> rtdata 'load .pkl bundle'
+    anomaly -> api 'scores'
+    api -> operator 'JSON'
+  }
 }

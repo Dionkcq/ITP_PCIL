@@ -85,6 +85,13 @@ def isolated_data_dir(monkeypatch, tmp_path) -> Path:
     data_dir = tmp_path / "data"
     data_dir.mkdir()
 
+    # PROJECT_ROOT is defined in pcil.runtime and re-imported (bound) into both
+    # the orchestrator and the anomaly router, so patch every bound copy — the
+    # anomaly endpoints (train/score/models) live in pcil.anomaly_api now.
+    import pcil.anomaly_api as anomaly_api
     import pcil.orchestrator as orch
+    import pcil.runtime as runtime
+    monkeypatch.setattr(runtime, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(orch, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(anomaly_api, "PROJECT_ROOT", tmp_path)
     return data_dir

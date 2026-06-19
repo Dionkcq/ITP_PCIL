@@ -1,0 +1,18 @@
+# PCIL anomaly service — pinned lock (PCIL_SERVICE=anomaly, the torch image).
+# ---------------------------------------------------------------------------
+# Only the anomaly stack: no RAG / DB / dashboard / LLM dependencies. torch is
+# installed from the CPU wheel index in Dockerfile.anomaly (==2.12.0 here is
+# satisfied by the 2.12.0+cpu build). Pins mirror requirements.txt.
+
+pandas==2.3.2
+numpy==2.4.4
+scikit-learn==1.8.0
+scipy==1.17.1
+joblib==1.5.3
+torch==2.12.0
+
+# FastAPI surface (the standalone anomaly app + multipart uploads for /train)
+fastapi==0.136.3
+uvicorn[standard]==0.47.0
+pydantic==2.13.4
+python-multipart==0.0.29

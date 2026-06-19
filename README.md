@@ -73,8 +73,9 @@ can also **browse the interactive version** at
 > **Scope.** These reflect the `postgre_implementation` branch: a **dockerized PostgreSQL
 > backend** (pgvector hybrid RAG + a shop-floor table) added alongside the file/CSV path,
 > which stays the default. It is still a **single** orchestrator container (pipeline +
-> anomaly together) - the pipeline/anomaly container split (P2) remains in the
-> [Roadmap](#roadmap) below.
+> anomaly together) by default, but an **optional split deployment** (P2) packages the
+> pipeline (torch-free) and anomaly as two containers - see
+> [Split deployment](#split-deployment-p2) below.
 
 ### Level 1 - System context
 
@@ -128,6 +129,22 @@ the row mapping):
 
 ![Anomaly scoring flow](docs/c4/anomalyflow.png)
 
+#### Split deployment (P2)
+
+By default everything runs in one container (`docker-compose.yml`, the `:postgres` image).
+For an optional split (`docker-compose.split.yml`), the `PCIL_SERVICE` env var packages PCIL
+as **two** containers that share the postgres service:
+
+- **Pipeline** (`:pipeline`, ~0.8 GB, **no torch**) — dashboard + `/pipeline`, `/configs`,
+  `/shopfloor` and the file/TF-IDF RAG. It **proxies `/anomaly/*`** to the anomaly service
+  (`ANOMALY_SERVICE_URL`) so the dashboard keeps working same-origin.
+- **Anomaly** (`:anomaly`, with torch, ~1.8 GB) — only `/anomaly/*` (train / score / models).
+
+Projects that do not need anomaly detection run just `postgres` + `pipeline`. The pgvector
+hybrid RAG stays in the full single-container image (the split pipeline uses the file RAG).
+
+![Split deployment](docs/c4/splitdeploy.png)
+
 #### Contract table
 
 | Stage | Input | Output contract |
@@ -152,11 +169,12 @@ the row mapping):
   `shop_floor` table over `DATABASE_URL` instead of a CSV, with the slice mode mapped to
   SQL. The CSV path stays the default. The same pgvector PostgreSQL service backs the
   hybrid RAG store.
-- **Pipeline / anomaly container split (P2) - still pending.** The single orchestrator
-  container would become **two** - a lightweight **Pipeline service** and an **Anomaly
-  service** (with `torch` only in the anomaly image) - so projects that do not need anomaly
-  detection can run the pipeline alone. When that lands, add a second Container diagram
-  showing both services + the database.
+- **Pipeline / anomaly container split (P2) - DONE on this branch.** `PCIL_SERVICE`
+  (full | pipeline | anomaly) splits PCIL into a lightweight, torch-free **Pipeline**
+  container (~0.8 GB) and an **Anomaly** container (torch, ~1.8 GB), via
+  `docker-compose.split.yml` + `Dockerfile.pipeline` / `Dockerfile.anomaly`. The pipeline
+  proxies `/anomaly/*` to the anomaly service. See
+  [Split deployment](#split-deployment-p2).
 
 ---
 
