@@ -56,9 +56,9 @@ services:
       RAG_EMBEDDING_MODEL: ${RAG_EMBEDDING_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
       RAG_RRF_K: ${RAG_RRF_K:-60}
       RAG_STRICT_STARTUP: ${RAG_STRICT_STARTUP:-false}
-      # Auto-seed the shop-floor table from the mounted CSV on startup so a
-      # postgres recipe (systems/inkjet_printer/config_postgres.yaml) has data
-      # to query. Idempotent: skipped once the table already has rows.
+      # Auto-seed the shop-floor table from the mounted CSV on startup so the
+      # default recipe (systems/inkjet_printer/config.yaml, source_type:
+      # postgres) has data to query. Idempotent: skipped once the table has rows.
       PCIL_SEED_SHOP_FLOOR: ${PCIL_SEED_SHOP_FLOOR:-true}
       PCIL_SHOP_FLOOR_TABLE: ${PCIL_SHOP_FLOOR_TABLE:-shop_floor}
       PCIL_SHOP_FLOOR_CSV: ${PCIL_SHOP_FLOOR_CSV:-data/mock_shop_floor.csv}

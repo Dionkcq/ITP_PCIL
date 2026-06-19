@@ -18,6 +18,8 @@ function toForm(cfg) {
   return {
     system: cfg.system ?? '',
     outputDir: cfg.pipeline?.output_dir ?? 'output',
+    sourceType: cfg.trigger?.source_type ?? 'csv',
+    table: cfg.trigger?.table ?? '',
     source: cfg.trigger?.source ?? '',
     mode: cfg.trigger?.mode ?? 'all',
     startTime: cfg.trigger?.start_time ?? '',
@@ -43,6 +45,8 @@ function toConfig(f) {
     system: f.system,
     pipeline: { output_dir: f.outputDir },
     trigger: {
+      source_type: f.sourceType,
+      table: f.table || null,
       source: f.source,
       mode: f.mode,
       start_time: f.mode === 'time_range' ? f.startTime || null : null,
@@ -335,8 +339,32 @@ export default function ConfigTab() {
           <section className="controls-card col cfg-section">
             <h3>Trigger / slice</h3>
             <div className="row">
+              <label className="field">
+                <span>Data source</span>
+                <select
+                  value={form.sourceType}
+                  onChange={(e) => patch({ sourceType: e.target.value })}
+                >
+                  <option value="csv">CSV file</option>
+                  <option value="postgres">PostgreSQL</option>
+                </select>
+              </label>
+              {form.sourceType === 'postgres' && (
+                <label className="field">
+                  <span>DB table</span>
+                  <input
+                    value={form.table}
+                    placeholder="shop_floor"
+                    onChange={(e) => patch({ table: e.target.value })}
+                  />
+                </label>
+              )}
               <label className="field grow">
-                <span>Shop-floor source (CSV path)</span>
+                <span>
+                  {form.sourceType === 'postgres'
+                    ? 'Seed CSV path (used by /shopfloor/seed)'
+                    : 'Shop-floor source (CSV path)'}
+                </span>
                 <input value={form.source} onChange={(e) => patch({ source: e.target.value })} />
               </label>
               <label className="field">

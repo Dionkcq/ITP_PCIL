@@ -34,16 +34,15 @@ class EmbeddingModelCache:
             if cls._model is not None and cls._model_name == model_name:
                 return cls._model
             try:
-                # Try to use sentence_transformers for BGE-M3 to avoid FlagEmbedding compatibility issues
                 from sentence_transformers import SentenceTransformer
                 cls._model = SentenceTransformer(model_name)
             except Exception as exc:
-                # Re-raise with context: could be missing package OR a dependency conflict
-                # (e.g., transformers version mismatch). The traceback will show which.
+                # Could be a missing package or a dependency conflict (e.g. a
+                # transformers version mismatch). The traceback shows which.
                 raise RuntimeError(
-                    f"Failed to import embedding model dependencies. "
-                    f"Check that sentence-transformers (or FlagEmbedding) and transformers are installed and compatible. "
-                    f"Error: {exc}"
+                    f"Failed to load the embedding model {model_name!r}. "
+                    f"Check that sentence-transformers and transformers are "
+                    f"installed and compatible. Error: {exc}"
                 ) from exc
 
             cls._model_name = model_name
@@ -56,29 +55,13 @@ class EmbeddingModelCache:
         if not batch:
             return [] if not single else [0.0] * EMBEDDING_DIM
         model = cls.get()
-        
-        # Check if using SentenceTransformer (simpler API) or BGEM3FlagModel (advanced API)
-        model_type = type(model).__name__
-        if model_type == "SentenceTransformer":
-            # SentenceTransformer.encode() returns numpy array directly
-            output = model.encode(
-                batch,
-                batch_size=int(os.environ.get("RAG_EMBED_BATCH_SIZE", "8")),
-            )
-            # Convert numpy array to list of lists
-            vectors = [list(map(float, v)) for v in output]
-        else:
-            # BGEM3FlagModel returns dict with "dense_vecs" key
-            output = model.encode(
-                batch,
-                batch_size=int(os.environ.get("RAG_EMBED_BATCH_SIZE", "8")),
-                max_length=int(os.environ.get("RAG_EMBED_MAX_LENGTH", "2048")),
-                return_dense=True,
-                return_sparse=False,
-                return_colbert_vecs=False,
-            )
-            dense = output["dense_vecs"]
-            vectors = [list(map(float, v)) for v in dense]
+        # get() always returns a sentence-transformers model; .encode() returns
+        # a numpy array of dense vectors (one row per input text).
+        output = model.encode(
+            batch,
+            batch_size=int(os.environ.get("RAG_EMBED_BATCH_SIZE", "8")),
+        )
+        vectors = [list(map(float, v)) for v in output]
         for vector in vectors:
             if len(vector) != EMBEDDING_DIM:
                 raise RuntimeError(
@@ -90,12 +73,3 @@ class EmbeddingModelCache:
     @classmethod
     def warm_up(cls) -> None:
         cls.encode("warm up retrieval model")
-
-
-def _cuda_available() -> bool:
-    try:
-        import torch
-
-        return bool(torch.cuda.is_available())
-    except Exception:  # noqa: BLE001
-        return False

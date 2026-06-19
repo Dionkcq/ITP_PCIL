@@ -74,7 +74,9 @@ def compose_recommendation(
         # is never mistaken for a real one.
         raise ValueError("no recovery records to compose from")
 
-    api_key = os.environ.get("GEMINI_API_KEY")
+    # .strip() so a stray space/newline in the .env (e.g. "KEY = value") does
+    # not slip through as a non-empty-but-unusable key.
+    api_key = (os.environ.get("GEMINI_API_KEY") or "").strip()
     if not api_key:
         raise RuntimeError(
             "GEMINI_API_KEY environment variable is not set. "

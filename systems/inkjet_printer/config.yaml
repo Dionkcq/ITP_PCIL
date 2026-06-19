@@ -1,16 +1,23 @@
 # ============================================================
-# PCIL Pipeline #1 — config.yaml  (Week-3 schema)
+# PCIL Pipeline #1 — config.yaml  (Week-3 schema, PostgreSQL source)
 # ============================================================
-# Describes the contract between the shop-floor DataFrame slice
-# (input) and the Golden DataFrame (output), plus the trigger
-# parameters the orchestrator uses to pull the slice.
+# This is the DEFAULT recipe on the postgre_implementation branch: the
+# shop-floor slice is pulled from the dockerized PostgreSQL service, not a
+# local CSV. For the file/CSV alternative, use config_csv.yaml (or set
+# source_type: csv here).
 #
-# This file is the "recipe" — pass its path to the orchestrator's
-# /pipeline/run API and the orchestrator follows the instructions
-# in here end to end.
+#   trigger.source_type: postgres   -> _pull_slice queries the DB
+#   trigger.table:       shop_floor -> the table to read
+#   trigger.source:      data/mock_shop_floor.csv
+#                                    -> the CSV used to SEED that table
+#                                       (POST /shopfloor/seed, or auto-seed on
+#                                       startup when PCIL_SEED_SHOP_FLOOR=true).
+#                                       In production the engineer's DB already
+#                                       holds the data, so seeding is off and
+#                                       this CSV is unused.
 #
-# Multiple recipes can live side by side (config_time.yaml,
-# config_last_n.yaml) for different experiments.
+# The DB connection comes from DATABASE_URL (set by docker-compose), so no
+# secrets live in this file. Downstream stages are identical to the CSV recipe.
 # ============================================================
 
 # ── System identity ─────────────────────────────────────────
@@ -23,29 +30,22 @@ pipeline:
   output_dir: "output"            # relative to this config file's parent
 
 # ── Trigger / slice parameters ──────────────────────────────
-# How the orchestrator pulls a window from the shop-floor source.
-#   mode = "all"        -> use the whole source (default)
-#   mode = "time_range" -> slice between start_time and end_time
-#   mode = "last_n"     -> take the last N rows
-#
-# `source` is the data location. For now this is a CSV path
-# (mock shop-floor). Once the engineering team has a real DB
-# it would be a connection string + query instead.
-#
-# Relative paths resolve against the project root (PCIL_PROJECT_ROOT,
-# or two levels above pcil/ when unset) — so "data/x.csv" finds
-# ITP/data/x.csv in dev and /app/data/x.csv in Docker. Paths relative
-# to this config file's folder also still work as a fallback.
+# source_type=postgres maps the slice mode to SQL:
+#   mode = "all"        -> SELECT * ... ORDER BY timestamp
+#   mode = "time_range" -> ... WHERE timestamp BETWEEN start_time AND end_time
+#   mode = "last_n"     -> ... ORDER BY timestamp DESC LIMIT last_n
 trigger:
-  source: "data/mock_shop_floor.csv"
+  source_type: postgres
+  table: shop_floor
+  source: "data/mock_shop_floor.csv"   # seed origin for /shopfloor/seed
   mode: "all"
   start_time: null              # ISO 8601 UTC, e.g. "2026-05-15T09:00:30+00:00"
   end_time: null                # ISO 8601 UTC
   last_n: null                  # positive integer
 
 # ── Input schema: shop-floor DataFrame slice ────────────────
-# What the trigger pulls from the shop-floor DB. The preprocessing
-# pipeline expects these columns to exist on the input DataFrame.
+# What the trigger pulls. The preprocessing pipeline expects these
+# columns to exist on the input DataFrame (table columns or CSV headers).
 input:
   timestamp_column: timestamp
 

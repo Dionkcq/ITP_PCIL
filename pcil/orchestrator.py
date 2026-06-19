@@ -36,9 +36,11 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import os
 import re
 import shutil
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -63,6 +65,8 @@ from pcil.rag.lookup import lookup_keywords
 from pcil.utils.anomaly.cyclical.score import score as cyclical_score
 from pcil.utils.anomaly.irregular.score import score as irregular_score
 from pcil.utils.anomaly.non_cyclical.score import score as non_cyclical_score
+
+logger = logging.getLogger("pcil.orchestrator")
 
 # Project root for resolving relative data paths (e.g. anomaly bundles).
 #   - In dev (PCIL_dev/): orchestrator.py -> pcil/ -> PCIL_dev/ -> ITP/ is the
@@ -137,7 +141,16 @@ def warm_postgres_rag() -> None:
             BM25IndexCache.rebuild()
         if _bool_env("RAG_WARM_EMBEDDINGS", True):
             EmbeddingModelCache.warm_up()
+        print(
+            "[startup] PostgreSQL RAG ready (migrations + ingest + embeddings).",
+            file=sys.stderr,
+        )
     except Exception:
+        # Resilient by default, but make the failure visible in the logs
+        # instead of silently coming up with an empty RAG store.
+        logger.exception(
+            "PostgreSQL RAG warm-up failed (RAG_STRICT_STARTUP=%s)", strict
+        )
         if strict:
             raise
 
@@ -165,8 +178,14 @@ def seed_shop_floor_on_startup() -> None:
     try:
         from pcil.shopfloor_db import seed_table_from_csv
 
-        seed_table_from_csv(csv_path, table, ts, if_empty=True)
+        result = seed_table_from_csv(csv_path, table, ts, if_empty=True)
+        print(
+            f"[startup] shop_floor seed: {result.get('status')} "
+            f"({result.get('rows')} rows) into '{table}'.",
+            file=sys.stderr,
+        )
     except Exception:  # noqa: BLE001 - never block startup on seeding
+        logger.exception("shop-floor seed failed (table=%s, csv=%s)", table, csv_path)
         if _bool_env("RAG_STRICT_STARTUP", False):
             raise
 
@@ -242,7 +261,7 @@ class SeedShopFloorRequest(BaseModel):
             "Recipe whose trigger.source (CSV) is loaded into trigger.table. "
             "The recipe should set source_type: postgres."
         ),
-        examples=["systems/inkjet_printer/config_postgres.yaml"],
+        examples=["systems/inkjet_printer/config.yaml"],
     )
     force: bool = Field(
         False,
@@ -1749,7 +1768,14 @@ def _score_non_cyclical(req: "AnomalyScoreRequest") -> dict:
             ),
         )
 
-    scored = non_cyclical_score(df, bundle)
+    try:
+        scored = non_cyclical_score(df, bundle)
+    except (KeyError, ValueError) as exc:
+        # e.g. an unknown machine_id at score time (PerMachineNormaliser) or a
+        # shape/column problem — a client input error, not a server crash.
+        raise HTTPException(
+            status_code=400, detail=f"non_cyclical scoring failed: {exc}"
+        ) from exc
 
     return {
         "status": "ok",
@@ -1805,7 +1831,12 @@ def _score_cyclical(req: "AnomalyScoreRequest") -> dict:
             ),
         )
 
-    scored = cyclical_score(df, bundle)
+    try:
+        scored = cyclical_score(df, bundle)
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(
+            status_code=400, detail=f"cyclical scoring failed: {exc}"
+        ) from exc
 
     threshold = bundle.get("threshold")
     threshold_source = (
@@ -1881,7 +1912,7 @@ def _score_irregular(req: "AnomalyScoreRequest") -> dict:
 
     try:
         scored = irregular_score(df, bundle)
-    except ValueError as exc:
+    except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     threshold = bundle.get("threshold")

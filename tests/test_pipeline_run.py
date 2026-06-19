@@ -4,7 +4,9 @@ These tests ensure the existing config-driven path still works after
 the refactor that extracted `_run_pipeline_on_df` into a shared helper.
 """
 
-DEFAULT_CONFIG = "systems/inkjet_printer/config.yaml"
+# config.yaml is the Postgres recipe now; these tests exercise the CSV/file
+# slice path, so they use the CSV recipe.
+DEFAULT_CONFIG = "systems/inkjet_printer/config_csv.yaml"
 
 
 def test_pipeline_run_with_default_config_returns_impacts(client):
@@ -65,7 +67,7 @@ def test_trigger_source_resolves_against_project_root(
     real_cfg = yaml.safe_load(
         (
             Path(__file__).resolve().parents[1]
-            / "systems" / "inkjet_printer" / "config.yaml"
+            / "systems" / "inkjet_printer" / "config_csv.yaml"
         ).read_text(encoding="utf-8")
     )
     assert real_cfg["trigger"]["source"] == "data/mock_shop_floor.csv"
@@ -96,7 +98,7 @@ def test_trigger_source_not_found_lists_tried_paths(client, monkeypatch, tmp_pat
     real_cfg = yaml.safe_load(
         (
             Path(__file__).resolve().parents[1]
-            / "systems" / "inkjet_printer" / "config.yaml"
+            / "systems" / "inkjet_printer" / "config_csv.yaml"
         ).read_text(encoding="utf-8")
     )
     real_cfg["trigger"]["source"] = "data/definitely_missing.csv"
@@ -128,7 +130,7 @@ def test_train_baseline_then_run_uses_baseline_artifacts(
     real_cfg = yaml.safe_load(
         (
             Path(__file__).resolve().parents[1]
-            / "systems" / "inkjet_printer" / "config.yaml"
+            / "systems" / "inkjet_printer" / "config_csv.yaml"
         ).read_text(encoding="utf-8")
     )
     real_cfg["trigger"]["source"] = str(shop_floor_tiny_path)

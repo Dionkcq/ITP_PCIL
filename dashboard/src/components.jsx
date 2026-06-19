@@ -81,6 +81,19 @@ export function KpiCards({ summary }) {
 // ── Operator recommendation ────────────────────────────────────────
 const FALLBACK_HINTS = ['not found', 'failed', 'not set', 'No matching recovery']
 
+// Status-specific guidance so the note points at the ACTUAL failure (e.g. an
+// LLM-key problem must not blame the RAG store, which may be perfectly fine).
+const FALLBACK_NOTE = {
+  llm_unavailable:
+    'Records were retrieved, but the LLM step failed — check GEMINI_API_KEY and that the container can reach the network.',
+  rag_unavailable:
+    'The RAG store is unavailable — in file mode mount data/RAG/; in postgres mode check the RAG store / DATABASE_URL.',
+  retrieval_failed:
+    'Retrieval errored before the LLM ran — see the message above for the cause.',
+  no_records:
+    'No recovery records matched this window, so there was nothing to ground a recommendation on.',
+}
+
 export function Recommendation({ text, status }) {
   // Canonical signal is the structured recommendation_status from the API
   // (ok | no_records | retrieval_failed | llm_unavailable | rag_unavailable).
@@ -97,8 +110,8 @@ export function Recommendation({ text, status }) {
       <p>{text || 'No recommendation returned.'}</p>
       {isFallback && (
         <div className="reco-note">
-          This is not a live grounded Gemini recommendation. Check that
-          GEMINI_API_KEY is set and the RAG store is available.
+          {FALLBACK_NOTE[status] ||
+            'This is not a live grounded Gemini recommendation.'}
         </div>
       )}
     </section>

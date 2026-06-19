@@ -188,7 +188,7 @@ def test_pull_slice_uses_postgres_when_recipe_says_so(
     r = client.post(
         "/pipeline/run",
         json={
-            "config_path": "systems/inkjet_printer/config_postgres.yaml",
+            "config_path": "systems/inkjet_printer/config.yaml",
             "persist": False,
         },
     )

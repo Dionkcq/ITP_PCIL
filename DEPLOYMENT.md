@@ -132,9 +132,13 @@ diagnosis back in the response.
 
 ### 5a. Run the pipeline on the configured source
 
-Uses the slice recipe baked into `systems/inkjet_printer/config.yaml`
-(which points at `data/mock_shop_floor.csv` inside the mounted data
-folder):
+Uses the default recipe `systems/inkjet_printer/config.yaml`, which on this
+branch reads the slice from the dockerized PostgreSQL `shop_floor` table
+(`source_type: postgres`). On startup the app seeds that table from the mounted
+`data/mock_shop_floor.csv` — idempotent, skipped once the table has rows; set
+`PCIL_SEED_SHOP_FLOOR=false` to disable, or re-seed with `POST /shopfloor/seed`.
+The slice mode maps to SQL (`all` -> `ORDER BY timestamp`; `time_range` ->
+`WHERE timestamp BETWEEN`; `last_n` -> `ORDER BY timestamp DESC LIMIT`):
 
 ```bash
 curl -X POST http://localhost:8000/pipeline/run \
@@ -156,26 +160,20 @@ curl -X POST http://localhost:8000/pipeline/run_csv \
      -F "file=@shop_floor_slice.csv"
 ```
 
-### 5c. Run the pipeline from the dockerized PostgreSQL shop-floor table
+### 5c. Run the pipeline from a CSV file instead of Postgres
 
-The compose stack includes a PostgreSQL service. To pull the slice from the
-database instead of a CSV, use the postgres recipe
-`systems/inkjet_printer/config_postgres.yaml` (it sets `source_type: postgres`
-and `table: shop_floor`). On startup the app seeds that table from the mounted
-`mock_shop_floor.csv` — idempotent, so it is skipped once the table has rows;
-set `PCIL_SEED_SHOP_FLOOR=false` to disable, or re-seed manually with
-`POST /shopfloor/seed`. Then:
+To read a CSV directly instead of the database, use `config_csv.yaml` (or set
+`source_type: csv` in your own recipe). It points at `data/mock_shop_floor.csv`
+in the mounted data folder:
 
 ```bash
 curl -X POST http://localhost:8000/pipeline/run \
      -H "Content-Type: application/json" \
-     -d '{"config_path": "systems/inkjet_printer/config_postgres.yaml", "persist": false}'
+     -d '{"config_path": "systems/inkjet_printer/config_csv.yaml", "persist": false}'
 ```
 
-The slice mode maps to SQL (`all` → `ORDER BY timestamp`; `time_range` →
-`WHERE timestamp BETWEEN`; `last_n` → `ORDER BY timestamp DESC LIMIT`).
-Everything downstream (preprocess → impacts → RAG → recommendation) is
-identical to the CSV path.
+Everything downstream (preprocess -> impacts -> RAG -> recommendation) is
+identical to the Postgres path.
 
 ### Response shape (both variants)
 
