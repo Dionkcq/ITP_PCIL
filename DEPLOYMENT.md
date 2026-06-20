@@ -123,33 +123,49 @@ docker compose logs -f     # follow the orchestrator logs
 docker compose down        # stop and remove the container
 ```
 
-## 4b. Split deployment (optional: pipeline + anomaly containers)
+## 4b. Modular deployments (pipeline and anomaly are independent)
 
-By default the single container above runs everything. To run the **pipeline**
-container and the **anomaly** container separately (the P2 split), use the split
-compose file:
+The anomaly service is "input → output only" — it needs no pipeline, RAG,
+dashboard or database. So you install **only what you need**:
+
+### Anomaly only (one container — for engineers who don't want the pipeline)
+
+```bash
+docker compose -f docker-compose.anomaly.yml up -d --build
+```
+
+Starts a **single** container (no postgres, no pipeline). Call it directly:
+
+```bash
+curl http://localhost:8000/anomaly/models
+curl -X POST http://localhost:8000/anomaly/score -H "Content-Type: application/json" \
+     -d '{"data": [ ... rows ... ], "model_type": "cyclical", "model_id": "inkjet_01"}'
+# train: POST http://localhost:8000/anomaly/train (multipart CSV)  ·  Swagger at /docs
+```
+
+Only `.pkl` bundles in the mounted `data/` are needed (none of the pipeline's
+`data/RAG`, recipes or database). `POSTGRES_PASSWORD` is **not** required.
+
+### Everything in one container (simplest)
+
+`docker compose up -d` (Section 4) — pipeline + anomaly + RAG in the single
+`:postgres` image. Best when you want the whole product on one box.
+
+### Pipeline + anomaly as separate containers (advanced)
 
 ```bash
 docker compose -f docker-compose.split.yml up -d --build
 ```
 
-This starts three containers: `postgres`, `pipeline` (serves the dashboard +
-`/pipeline`, `/configs`, `/shopfloor` and the full pgvector hybrid RAG, ~2.1 GB)
-and `anomaly` (only `/anomaly/*`, where the cyclical autoencoder lives, ~1.8 GB).
-The pipeline **proxies `/anomaly/*`** to the anomaly container
-(`ANOMALY_SERVICE_URL`), so the dashboard's Anomaly tab still works at
-`http://localhost:8000`. Projects that do not need anomaly detection can run just
-`postgres` + `pipeline`.
+Three containers: `postgres`, `pipeline` (dashboard + `/pipeline`, `/configs`,
+`/shopfloor` + hybrid RAG) and `anomaly`. The pipeline **proxies `/anomaly/*`**
+to the anomaly container, so the dashboard's Anomaly tab still works at
+`http://localhost:8000`. Use this only when you want both services running but
+independently scalable; otherwise prefer anomaly-only or the single image. Both
+containers carry torch (pipeline for RAG embeddings, anomaly for the
+autoencoder), so this is about operational separation, not image size.
 
-Notes:
-- Both containers carry torch (the pipeline for the RAG embeddings, the anomaly
-  service for the autoencoder), so the split is about **operational separation**
-  — independent scaling, and dropping the anomaly container entirely — not image
-  size. For one-box simplicity use the single-container `docker-compose.yml`.
-- Same `.env` (`POSTGRES_PASSWORD`, `GEMINI_API_KEY`, `PCIL_DATA_DIR`). The
-  anomaly container is not published on the host by default — uncomment its
-  `ports:` in the compose file to call it directly.
-- Stop with `docker compose -f docker-compose.split.yml down`.
+Stop any of these with `docker compose -f <file> down`.
 
 ## 5. Triggering the solution
 

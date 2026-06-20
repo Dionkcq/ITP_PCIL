@@ -1,0 +1,39 @@
+# PCIL Anomaly service — STANDALONE (one container, no pipeline, no postgres).
+# ----------------------------------------------------------------------------
+# For engineers who only want anomaly scoring/training and do NOT want the
+# pipeline, RAG, dashboard or a database. This is the modular use case Winardi
+# asked for: install just anomaly.
+#
+#   docker compose -f docker-compose.anomaly.yml up -d --build
+#
+# Then call it directly (no proxy in front):
+#   GET  http://localhost:8000/anomaly/models
+#   POST http://localhost:8000/anomaly/score   (rows + model_type)
+#   POST http://localhost:8000/anomaly/train   (CSV upload)
+#   GET  http://localhost:8000/docs            (Swagger UI)
+#
+# Variables (read from a .env next to this file, all optional):
+#   PCIL_ANOMALY_IMAGE  default ghcr.io/dionkcq/itp_pcil:anomaly
+#   PCIL_ANOMALY_PORT   host port (default 8000)
+#   PCIL_DATA_DIR       host data folder holding the .pkl bundles (default ./data)
+
+services:
+  anomaly:
+    image: ${PCIL_ANOMALY_IMAGE:-ghcr.io/dionkcq/itp_pcil:anomaly}
+    build:
+      context: .
+      dockerfile: Dockerfile.anomaly
+    container_name: pcil-anomaly
+    ports:
+      - "${PCIL_ANOMALY_PORT:-8000}:8000"
+    volumes:
+      # Anomaly bundles (.pkl) live here: read at /anomaly/score, written at
+      # /anomaly/train. No database is involved.
+      - ${PCIL_DATA_DIR:-./data}:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s

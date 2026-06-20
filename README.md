@@ -129,22 +129,27 @@ the row mapping):
 
 ![Anomaly scoring flow](docs/c4/anomalyflow.png)
 
-#### Split deployment (P2)
+#### Deployment options (modular: P2)
 
-By default everything runs in one container (`docker-compose.yml`, the `:postgres` image).
-For an optional split (`docker-compose.split.yml`), the `PCIL_SERVICE` env var packages PCIL
-as **two** containers that share the postgres service:
+The pipeline and the anomaly service are **independent** — anomaly is "input → output only"
+and needs no pipeline, RAG, dashboard or database. So you install **only what you need**
+(driven by the `PCIL_SERVICE` env var):
 
-- **Pipeline** (`:pipeline`, ~2.1 GB) — dashboard + `/pipeline`, `/configs`, `/shopfloor`
-  and the full pgvector **hybrid RAG** (BM25 + embeddings + RRF). It **proxies `/anomaly/*`**
-  to the anomaly service (`ANOMALY_SERVICE_URL`) so the dashboard keeps working same-origin.
-- **Anomaly** (`:anomaly`, ~1.8 GB) — only `/anomaly/*` (train / score / models), where the
-  cyclical 1D-CNN autoencoder lives.
+| You want… | Run | Containers |
+|---|---|---|
+| **Only anomaly** (score/train) | `docker compose -f docker-compose.anomaly.yml up -d` | **1** — `:anomaly` (no postgres, no pipeline) |
+| **Everything, simply** | `docker compose up -d` | **1** — `:postgres` (pipeline + anomaly + RAG in one) |
+| **Pipeline + anomaly as separate services** | `docker compose -f docker-compose.split.yml up -d` | 3 — postgres + `:pipeline` + `:anomaly` |
 
-Both share the postgres service. Projects that do not need anomaly detection run just
-`postgres` + `pipeline`; the anomaly container can also be scaled or called on its own.
-(The split pipeline carries torch for the RAG embeddings, so it is not smaller than the full
-image - the win is operational separation, not size.)
+- **Anomaly-only** is the modular case: an engineer who just wants scoring runs **one
+  container** and calls `POST /anomaly/score` / `/anomaly/train` directly on port 8000. No
+  pipeline install.
+- **`:pipeline`** (~2.1 GB) — dashboard + `/pipeline`, `/configs`, `/shopfloor` and the full
+  pgvector **hybrid RAG**; it **proxies `/anomaly/*`** to the anomaly service so the dashboard
+  stays same-origin. **`:anomaly`** (~1.8 GB) — only `/anomaly/*`, where the cyclical 1D-CNN
+  autoencoder lives.
+- The 3-container split is only for running both as separately scalable services; most users
+  want either anomaly-only or the single full image.
 
 ![Split deployment](docs/c4/splitdeploy.png)
 
@@ -172,12 +177,12 @@ image - the win is operational separation, not size.)
   `shop_floor` table over `DATABASE_URL` instead of a CSV, with the slice mode mapped to
   SQL. The CSV path stays the default. The same pgvector PostgreSQL service backs the
   hybrid RAG store.
-- **Pipeline / anomaly container split (P2) - DONE on this branch.** `PCIL_SERVICE`
-  (full | pipeline | anomaly) splits PCIL into a **Pipeline** container (dashboard +
-  pipeline + hybrid RAG, ~2.1 GB) and an **Anomaly** container (the autoencoder, ~1.8 GB),
-  via `docker-compose.split.yml` + `Dockerfile.pipeline` / `Dockerfile.anomaly`. The
-  pipeline proxies `/anomaly/*` to the anomaly service. See
-  [Split deployment](#split-deployment-p2).
+- **Pipeline / anomaly modularity (P2) - DONE on this branch.** `PCIL_SERVICE`
+  (full | pipeline | anomaly) lets the anomaly service run **on its own** (one container, no
+  pipeline/postgres - `docker-compose.anomaly.yml`), the full stack run in **one** container
+  (`docker-compose.yml`), or pipeline + anomaly run as **separate** containers
+  (`docker-compose.split.yml`), via `Dockerfile.pipeline` / `Dockerfile.anomaly`. See
+  [Deployment options](#deployment-options-modular-p2).
 
 ---
 
