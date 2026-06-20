@@ -1,0 +1,78 @@
+# PCIL Pipeline service (+ postgres) — NO anomaly container.
+# ----------------------------------------------------------------------------
+# For deployments that want diagnosis + dashboard + hybrid RAG but NOT anomaly
+# scoring. Two containers: postgres + pipeline. The anomaly endpoints return
+# HTTP 503 (no anomaly service wired). To get anomaly too, either run the full
+# single image (docker-compose.yml), the 3-container split
+# (docker-compose.split.yml), OR run the anomaly service separately
+# (docker-compose.anomaly.yml) and point ANOMALY_SERVICE_URL at it.
+#
+#   docker compose -f docker-compose.pipeline.yml up -d --build
+#   dashboard: http://localhost:8000/dashboard   (Anomaly tab shows 503)
+#
+# Variables (read from .env next to this file):
+#   POSTGRES_PASSWORD   required
+#   PCIL_PORT           host port (default 8000)
+#   PCIL_DATA_DIR       host data folder (default ./data)
+#   PCIL_PIPELINE_IMAGE default ghcr.io/dionkcq/itp_pcil:pipeline
+#   ANOMALY_SERVICE_URL optional — set to an external anomaly host to enable
+#                       /anomaly/* (e.g. http://my-anomaly-host:8000)
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: pcil-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-pcil}
+      POSTGRES_USER: ${POSTGRES_USER:-pcil}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pcil_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pcil} -d ${POSTGRES_DB:-pcil}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  pipeline:
+    image: ${PCIL_PIPELINE_IMAGE:-ghcr.io/dionkcq/itp_pcil:pipeline}
+    build:
+      context: .
+      dockerfile: Dockerfile.pipeline
+    container_name: pcil-pipeline
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${PCIL_PORT:-8000}:8000"
+    environment:
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-pcil}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-pcil}
+      RAG_BACKEND: ${RAG_BACKEND:-postgres}
+      RAG_AUTO_INGEST: ${RAG_AUTO_INGEST:-true}
+      RAG_EMBEDDING_MODEL: ${RAG_EMBEDDING_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
+      RAG_RRF_K: ${RAG_RRF_K:-60}
+      RAG_STRICT_STARTUP: ${RAG_STRICT_STARTUP:-false}
+      # No anomaly container here. Leave ANOMALY_SERVICE_URL unset so /anomaly/*
+      # returns a clear 503; or set it to an external anomaly host to enable it.
+      ANOMALY_SERVICE_URL: ${ANOMALY_SERVICE_URL:-}
+      PCIL_SEED_SHOP_FLOOR: ${PCIL_SEED_SHOP_FLOOR:-true}
+      PCIL_SHOP_FLOOR_TABLE: ${PCIL_SHOP_FLOOR_TABLE:-shop_floor}
+      PCIL_SHOP_FLOOR_CSV: ${PCIL_SHOP_FLOOR_CSV:-data/mock_shop_floor.csv}
+    volumes:
+      - ${PCIL_DATA_DIR:-./data}:/app/data
+      - ${PCIL_SYSTEMS_DIR:-./systems}:/app/systems
+      - hf_cache:/root/.cache/huggingface
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  pcil_pgdata:
+  hf_cache:

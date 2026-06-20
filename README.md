@@ -138,12 +138,15 @@ and needs no pipeline, RAG, dashboard or database. So you install **only what yo
 | You want… | Run | Containers |
 |---|---|---|
 | **Only anomaly** (score/train) | `docker compose -f docker-compose.anomaly.yml up -d` | **1** — `:anomaly` (no postgres, no pipeline) |
-| **Everything, simply** | `docker compose up -d` | **1** — `:postgres` (pipeline + anomaly + RAG in one) |
+| **Only the pipeline** (diagnosis + dashboard, no anomaly) | `docker compose -f docker-compose.pipeline.yml up -d` | 2 — postgres + `:pipeline` (`/anomaly/*` → 503) |
+| **Everything, simply** | `docker compose up -d` | **1** + db — `:postgres` (pipeline + anomaly + RAG in one) |
 | **Pipeline + anomaly as separate services** | `docker compose -f docker-compose.split.yml up -d` | 3 — postgres + `:pipeline` + `:anomaly` |
 
-- **Anomaly-only** is the modular case: an engineer who just wants scoring runs **one
-  container** and calls `POST /anomaly/score` / `/anomaly/train` directly on port 8000. No
-  pipeline install.
+- **Anomaly-only** and **pipeline-only** are the modular cases: anomaly runs as one
+  container with no pipeline/postgres (engineers call `/anomaly/score` directly on port
+  8000); pipeline-only runs diagnosis + dashboard + hybrid RAG without anomaly (its
+  `/anomaly/*` returns a clear 503, or point `ANOMALY_SERVICE_URL` at a separately-run
+  anomaly host). The dashboard ships with the pipeline, not the anomaly service.
 - **`:pipeline`** (~2.1 GB) — dashboard + `/pipeline`, `/configs`, `/shopfloor` and the full
   pgvector **hybrid RAG**; it **proxies `/anomaly/*`** to the anomaly service so the dashboard
   stays same-origin. **`:anomaly`** (~1.8 GB) — only `/anomaly/*`, where the cyclical 1D-CNN

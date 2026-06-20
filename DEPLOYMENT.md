@@ -146,6 +146,19 @@ curl -X POST http://localhost:8000/anomaly/score -H "Content-Type: application/j
 Only `.pkl` bundles in the mounted `data/` are needed (none of the pipeline's
 `data/RAG`, recipes or database). `POSTGRES_PASSWORD` is **not** required.
 
+### Pipeline only (diagnosis + dashboard, no anomaly)
+
+```bash
+docker compose -f docker-compose.pipeline.yml up -d --build
+```
+
+Two containers (`postgres` + `pipeline`). Dashboard at
+`http://localhost:8000/dashboard`; `/pipeline/run`, `/configs`, `/shopfloor` and
+the hybrid RAG all work. The anomaly endpoints return a clear **503** (no anomaly
+service). To enable anomaly later, run it separately
+(`docker-compose.anomaly.yml`) and set `ANOMALY_SERVICE_URL` to that host — even
+on a different machine.
+
 ### Everything in one container (simplest)
 
 `docker compose up -d` (Section 4) — pipeline + anomaly + RAG in the single
