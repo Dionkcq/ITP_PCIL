@@ -1,10 +1,13 @@
-# PCIL Pipeline service — lightweight image (PCIL_SERVICE=pipeline, no torch).
+# PCIL Pipeline service image (PCIL_SERVICE=pipeline).
 # ----------------------------------------------------------------------------
-# Serves the dashboard + /pipeline, /configs, /shopfloor and the file/TF-IDF
-# RAG, and proxies /anomaly/* to the anomaly service (ANOMALY_SERVICE_URL).
-# Drops torch + the embedding stack, so the image is much smaller than the full
-# build. Use the split compose file:
+# Serves the dashboard + /pipeline, /configs, /shopfloor and the FULL pgvector
+# hybrid RAG (BM25 + dense embeddings + RRF). It proxies /anomaly/* to the
+# anomaly service (ANOMALY_SERVICE_URL), so it does NOT run anomaly detection
+# and never imports the cyclical autoencoder. Use the split compose file:
 #     docker compose -f docker-compose.split.yml up -d --build
+#
+# Because the hybrid RAG embeds with sentence-transformers (torch), this image
+# carries torch — it is NOT the lightweight file-RAG variant.
 
 # ── Stage 1: build the React dashboard ───────────────────────────────
 FROM node:20-slim AS dashboard-build
@@ -14,7 +17,8 @@ RUN npm ci
 COPY dashboard/ ./
 RUN npm run build
 
-# ── Stage 2: Python runtime (no torch -> no Rust toolchain needed) ───
+# ── Stage 2: Python runtime ──────────────────────────────────────────
+# Python 3.12: tokenizers/transformers have full PyO3 support.
 FROM python:3.12-slim
 
 RUN apt-get update \
@@ -23,12 +27,21 @@ RUN apt-get update \
 
 WORKDIR /app
 
+# Install the CPU-only torch wheel first (the default PyPI torch bundles CUDA,
+# ~GB). The requirements install then sees torch==2.12.0 already satisfied.
+# transformers/tokenizers build from source -> need a Rust compiler for the
+# install step; remove it afterwards to keep the image slimmer.
 COPY requirements-pipeline.txt ./
-RUN pip install --no-cache-dir -r requirements-pipeline.txt
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential rustc \
+    && pip install --no-cache-dir torch==2.12.0 --index-url https://download.pytorch.org/whl/cpu \
+    && pip install --no-cache-dir -r requirements-pipeline.txt \
+    && apt-get purge -y build-essential rustc gcc g++ make \
+    && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
 
 # Application code. pcil/ includes the anomaly modules, but pipeline mode never
-# imports them (see the service-composition block in orchestrator.py), so torch
-# is never needed at runtime.
+# imports them (see the service-composition block in orchestrator.py).
 COPY pcil/ ./pcil/
 COPY systems/ ./systems/
 COPY --from=dashboard-build /build/dashboard/dist/ ./dashboard/dist/
@@ -36,6 +49,7 @@ COPY --from=dashboard-build /build/dashboard/dist/ ./dashboard/dist/
 ENV DASHBOARD_DIST_DIR=/app/dashboard/dist
 ENV PCIL_PROJECT_ROOT=/app
 ENV PCIL_SERVICE=pipeline
+ENV HF_HOME=/root/.cache/huggingface
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 

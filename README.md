@@ -74,7 +74,7 @@ can also **browse the interactive version** at
 > backend** (pgvector hybrid RAG + a shop-floor table) added alongside the file/CSV path,
 > which stays the default. It is still a **single** orchestrator container (pipeline +
 > anomaly together) by default, but an **optional split deployment** (P2) packages the
-> pipeline (torch-free) and anomaly as two containers - see
+> pipeline and anomaly as two independent containers - see
 > [Split deployment](#split-deployment-p2) below.
 
 ### Level 1 - System context
@@ -135,13 +135,16 @@ By default everything runs in one container (`docker-compose.yml`, the `:postgre
 For an optional split (`docker-compose.split.yml`), the `PCIL_SERVICE` env var packages PCIL
 as **two** containers that share the postgres service:
 
-- **Pipeline** (`:pipeline`, ~0.8 GB, **no torch**) — dashboard + `/pipeline`, `/configs`,
-  `/shopfloor` and the file/TF-IDF RAG. It **proxies `/anomaly/*`** to the anomaly service
-  (`ANOMALY_SERVICE_URL`) so the dashboard keeps working same-origin.
-- **Anomaly** (`:anomaly`, with torch, ~1.8 GB) — only `/anomaly/*` (train / score / models).
+- **Pipeline** (`:pipeline`, ~2.1 GB) — dashboard + `/pipeline`, `/configs`, `/shopfloor`
+  and the full pgvector **hybrid RAG** (BM25 + embeddings + RRF). It **proxies `/anomaly/*`**
+  to the anomaly service (`ANOMALY_SERVICE_URL`) so the dashboard keeps working same-origin.
+- **Anomaly** (`:anomaly`, ~1.8 GB) — only `/anomaly/*` (train / score / models), where the
+  cyclical 1D-CNN autoencoder lives.
 
-Projects that do not need anomaly detection run just `postgres` + `pipeline`. The pgvector
-hybrid RAG stays in the full single-container image (the split pipeline uses the file RAG).
+Both share the postgres service. Projects that do not need anomaly detection run just
+`postgres` + `pipeline`; the anomaly container can also be scaled or called on its own.
+(The split pipeline carries torch for the RAG embeddings, so it is not smaller than the full
+image - the win is operational separation, not size.)
 
 ![Split deployment](docs/c4/splitdeploy.png)
 
@@ -170,10 +173,10 @@ hybrid RAG stays in the full single-container image (the split pipeline uses the
   SQL. The CSV path stays the default. The same pgvector PostgreSQL service backs the
   hybrid RAG store.
 - **Pipeline / anomaly container split (P2) - DONE on this branch.** `PCIL_SERVICE`
-  (full | pipeline | anomaly) splits PCIL into a lightweight, torch-free **Pipeline**
-  container (~0.8 GB) and an **Anomaly** container (torch, ~1.8 GB), via
-  `docker-compose.split.yml` + `Dockerfile.pipeline` / `Dockerfile.anomaly`. The pipeline
-  proxies `/anomaly/*` to the anomaly service. See
+  (full | pipeline | anomaly) splits PCIL into a **Pipeline** container (dashboard +
+  pipeline + hybrid RAG, ~2.1 GB) and an **Anomaly** container (the autoencoder, ~1.8 GB),
+  via `docker-compose.split.yml` + `Dockerfile.pipeline` / `Dockerfile.anomaly`. The
+  pipeline proxies `/anomaly/*` to the anomaly service. See
   [Split deployment](#split-deployment-p2).
 
 ---

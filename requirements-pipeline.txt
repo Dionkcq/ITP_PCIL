@@ -1,8 +1,10 @@
-# PCIL pipeline service — lightweight pinned lock (PCIL_SERVICE=pipeline).
+# PCIL pipeline service — pinned lock (PCIL_SERVICE=pipeline).
 # ----------------------------------------------------------------------
-# NO torch / sentence-transformers / transformers / rank-bm25: the pipeline
-# image runs the file/TF-IDF RAG backend. For the pgvector hybrid RAG use the
-# full image (requirements.txt). Pins mirror requirements.txt.
+# The pipeline container runs the FULL pgvector hybrid RAG (BM25 + dense
+# embeddings + RRF), so it needs torch + sentence-transformers like the full
+# image. It does NOT run anomaly detection: the anomaly subpackages are present
+# in pcil/ but never imported in pipeline mode (orchestrator proxies /anomaly/*
+# to the anomaly service). Pins mirror requirements.txt.
 
 # Pipeline #1 / #2
 pandas==2.3.2
@@ -18,10 +20,18 @@ uvicorn[standard]==0.47.0
 pydantic==2.13.4
 python-multipart==0.0.29
 
-# Shop-floor Postgres source (psycopg) + LLM + file-RAG document parsing
+# Shop-floor Postgres source (psycopg) + LLM + DOCX parsing
 psycopg[binary]==3.2.13
 google-genai==2.8.0
 python-docx==1.2.0
+
+# Pgvector hybrid RAG: dense embeddings (sentence-transformers -> torch) +
+# lexical BM25. torch is installed from the CPU wheel index in
+# Dockerfile.pipeline (==2.12.0 here is satisfied by the 2.12.0+cpu build).
+torch==2.12.0
+transformers==4.46.3
+sentence-transformers==3.3.1
+rank-bm25==0.2.2
 
 # Reverse-proxy /anomaly/* to the anomaly service
 httpx==0.28.1

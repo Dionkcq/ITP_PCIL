@@ -125,24 +125,27 @@ docker compose down        # stop and remove the container
 
 ## 4b. Split deployment (optional: pipeline + anomaly containers)
 
-By default the single container above runs everything. To run the lightweight,
-torch-free **pipeline** container and the **anomaly** container separately (the
-P2 split), use the split compose file:
+By default the single container above runs everything. To run the **pipeline**
+container and the **anomaly** container separately (the P2 split), use the split
+compose file:
 
 ```bash
 docker compose -f docker-compose.split.yml up -d --build
 ```
 
 This starts three containers: `postgres`, `pipeline` (serves the dashboard +
-`/pipeline`, `/configs`, `/shopfloor`; file/TF-IDF RAG; no torch, ~0.8 GB) and
-`anomaly` (only `/anomaly/*`; torch, ~1.8 GB). The pipeline **proxies
-`/anomaly/*`** to the anomaly container (`ANOMALY_SERVICE_URL`), so the
-dashboard's Anomaly tab still works at `http://localhost:8000`. Projects that do
-not need anomaly detection can run just `postgres` + `pipeline`.
+`/pipeline`, `/configs`, `/shopfloor` and the full pgvector hybrid RAG, ~2.1 GB)
+and `anomaly` (only `/anomaly/*`, where the cyclical autoencoder lives, ~1.8 GB).
+The pipeline **proxies `/anomaly/*`** to the anomaly container
+(`ANOMALY_SERVICE_URL`), so the dashboard's Anomaly tab still works at
+`http://localhost:8000`. Projects that do not need anomaly detection can run just
+`postgres` + `pipeline`.
 
 Notes:
-- The split pipeline uses the **file/TF-IDF RAG** (no embeddings). The pgvector
-  **hybrid RAG** lives only in the full single-container image above.
+- Both containers carry torch (the pipeline for the RAG embeddings, the anomaly
+  service for the autoencoder), so the split is about **operational separation**
+  — independent scaling, and dropping the anomaly container entirely — not image
+  size. For one-box simplicity use the single-container `docker-compose.yml`.
 - Same `.env` (`POSTGRES_PASSWORD`, `GEMINI_API_KEY`, `PCIL_DATA_DIR`). The
   anomaly container is not published on the host by default — uncomment its
   `ports:` in the compose file to call it directly.

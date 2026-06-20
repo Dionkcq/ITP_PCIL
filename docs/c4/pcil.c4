@@ -190,12 +190,13 @@ views {
   // anomaly container (torch). Both share the postgres service. `api` lives in
   // the pipeline container, `anomaly` in the anomaly container.
   dynamic view splitdeploy {
-    title 'Split deployment (P2): lightweight pipeline + anomaly containers'
-    operator -> dashboard 'open (served by the pipeline container, no torch)'
+    title 'Split deployment (P2): pipeline + anomaly containers'
+    operator -> dashboard 'open (served by the pipeline container)'
     dashboard -> api 'POST /pipeline/run'
     api -> shopdb 'postgres source'
     shopdb -> postgres 'SELECT slice'
-    api -> rag 'file / TF-IDF RAG (this container has no embeddings)'
+    api -> rag 'pgvector hybrid RAG (BM25 + embeddings + RRF)'
+    rag -> postgres 'retrieve records'
     api -> composer 'compose'
     composer -> gemini 'prompt'
     dashboard -> api 'POST /anomaly/score'

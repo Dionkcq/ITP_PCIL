@@ -29,9 +29,9 @@ def service() -> str:
 
     full     - single container, every endpoint (default; the :postgres /
                :latest image and the current single-container deployment).
-    pipeline - pipeline + config + shopfloor + RAG + dashboard, NO anomaly
-               (the lightweight, torch-free image); /anomaly/* is proxied to the
-               anomaly service when ANOMALY_SERVICE_URL is set.
+    pipeline - pipeline + config + shopfloor + RAG (incl. pgvector hybrid) +
+               dashboard, NO anomaly; /anomaly/* is proxied to the anomaly
+               service when ANOMALY_SERVICE_URL is set.
     anomaly  - only the /anomaly/* API (the torch image; pcil/anomaly_app.py).
     """
     return os.environ.get("PCIL_SERVICE", "full").lower()

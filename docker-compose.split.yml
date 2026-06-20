@@ -2,13 +2,14 @@
 # ------------------------------------------------------------------------
 #   docker compose -f docker-compose.split.yml up -d --build
 #
-# The lightweight pipeline service (no torch) serves the dashboard + /pipeline,
-# /configs, /shopfloor and the file/TF-IDF RAG, and proxies /anomaly/* to the
-# anomaly service (torch). Both share the postgres service for shop-floor data.
-# Projects that do not need anomaly detection can run just `postgres` + `pipeline`.
+# The pipeline service serves the dashboard + /pipeline, /configs, /shopfloor
+# and the full pgvector hybrid RAG, and proxies /anomaly/* to the anomaly
+# service (the cyclical autoencoder lives there). Both share the postgres
+# service for shop-floor data + the RAG store. Projects that do not need anomaly
+# detection can run just `postgres` + `pipeline`.
 #
 # The single-container build stays in docker-compose.yml (the full :postgres
-# image, which also has the pgvector hybrid RAG).
+# image, which runs anomaly in-process instead of as a separate container).
 #
 # Variables (read from .env next to this file):
 #   POSTGRES_PASSWORD     required
@@ -49,8 +50,12 @@ services:
     environment:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       DATABASE_URL: postgresql://${POSTGRES_USER:-pcil}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-pcil}
-      # Lightweight pipeline uses the file/TF-IDF RAG (no embeddings, no torch).
-      RAG_BACKEND: file
+      # Pipeline runs the full pgvector hybrid RAG (BM25 + dense embeddings + RRF).
+      RAG_BACKEND: ${RAG_BACKEND:-postgres}
+      RAG_AUTO_INGEST: ${RAG_AUTO_INGEST:-true}
+      RAG_EMBEDDING_MODEL: ${RAG_EMBEDDING_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
+      RAG_RRF_K: ${RAG_RRF_K:-60}
+      RAG_STRICT_STARTUP: ${RAG_STRICT_STARTUP:-false}
       # Forward /anomaly/* to the anomaly service so the dashboard's Anomaly tab
       # keeps working same-origin.
       ANOMALY_SERVICE_URL: http://anomaly:8000
@@ -61,6 +66,8 @@ services:
     volumes:
       - ${PCIL_DATA_DIR:-./data}:/app/data
       - ${PCIL_SYSTEMS_DIR:-./systems}:/app/systems
+      # Persist the embedding model across rebuilds/restarts.
+      - hf_cache:/root/.cache/huggingface
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/', timeout=5)"]
@@ -94,3 +101,4 @@ services:
 
 volumes:
   pcil_pgdata:
+  hf_cache:
