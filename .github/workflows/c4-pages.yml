@@ -1,5 +1,8 @@
-# Build the LikeC4 interactive architecture site and publish it to GitHub Pages.
-# Source of truth: docs/c4/pcil.c4 (the same model the README PNGs come from).
+# Build the LikeC4 interactive architecture sites and publish them to GitHub Pages.
+# ONE Pages site, TWO sub-path pages (one per branch):
+#   /ITP_PCIL/          -> landing chooser (docs/c4/landing/index.html)
+#   /ITP_PCIL/main/     -> main (CSV) model      (docs/c4/main/pcil.c4)
+#   /ITP_PCIL/postgres/ -> Postgres-branch model (docs/c4/postgres/pcil.c4)
 # Runs on any push that touches docs/c4/ (or this file), and on manual dispatch.
 name: Deploy C4 site (GitHub Pages)
 
@@ -31,9 +34,15 @@ jobs:
           node-version: "22"
       # LikeC4 is run via npx only - it is NOT a project dependency.
       # `build` produces a static SPA (no headless browser needed).
-      # --base must match the Pages project sub-path (/<repo>/).
-      - name: Build LikeC4 site
-        run: npx -y likec4@1.58.0 build docs/c4 -o _site --base /ITP_PCIL/
+      # Each model is built into its own sub-path; --base must match it.
+      # The two models live in separate folders so their element ids never
+      # clash (LikeC4 scans a build folder recursively).
+      - name: Build main (CSV) architecture
+        run: npx -y likec4@1.58.0 build docs/c4/main -o _site/main --base /ITP_PCIL/main/
+      - name: Build Postgres-branch architecture
+        run: npx -y likec4@1.58.0 build docs/c4/postgres -o _site/postgres --base /ITP_PCIL/postgres/
+      - name: Add landing chooser page
+        run: cp docs/c4/landing/index.html _site/index.html
       - name: Configure Pages
         uses: actions/configure-pages@v5
         with:

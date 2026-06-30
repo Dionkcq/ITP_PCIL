@@ -64,11 +64,13 @@ zoom: **Context** (the system and who it talks to), **Container** (the runnable 
 and **Component** (the code modules inside a container), plus a **runtime data-flow** that
 shows the contract handed between pipeline stages. The *Code* level (L4) is intentionally
 skipped - the source is the truth at that zoom. The diagrams below are generated from a
-single [LikeC4](https://likec4.dev) model, [`docs/c4/pcil.c4`](docs/c4/pcil.c4) - edit it
+single [LikeC4](https://likec4.dev) model, [`docs/c4/main/pcil.c4`](docs/c4/main/pcil.c4) - edit it
 and re-export the PNGs with the steps in [`docs/c4/README.md`](docs/c4/README.md). You
 can also **browse the interactive version** at
-[dionkcq.github.io/ITP_PCIL](https://dionkcq.github.io/ITP_PCIL/) - auto-deployed from
-`docs/c4/` via GitHub Pages.
+[dionkcq.github.io/ITP_PCIL/main](https://dionkcq.github.io/ITP_PCIL/main/) - auto-deployed
+from `docs/c4/` via GitHub Pages. The landing page at
+[dionkcq.github.io/ITP_PCIL](https://dionkcq.github.io/ITP_PCIL/) also links the interactive
+**Postgres-branch** architecture (built from [`docs/c4/postgres/`](docs/c4/postgres/)).
 
 > **Scope.** These reflect the current `main` branch: a CSV/file data source and a
 > **single** orchestrator container (pipeline + anomaly together). The planned PostgreSQL
@@ -77,11 +79,11 @@ can also **browse the interactive version** at
 
 ### Level 1 - System context
 
-![Level 1 - System context](docs/c4/index.png)
+![Level 1 - System context](docs/c4/main/index.png)
 
 ### Level 2 - Containers
 
-![Level 2 - Containers](docs/c4/containers.png)
+![Level 2 - Containers](docs/c4/main/containers.png)
 
 ### Level 3 - Components (the orchestrator's internals)
 
@@ -89,7 +91,7 @@ Inside the single FastAPI container, the request coordinator (`orchestrator.py`)
 together the pipeline stages, the anomaly subpackages, and the config-recipe manager.
 Data passes between stages **in memory**; nothing is written to disk during a normal run.
 
-![Level 3 - Components](docs/c4/components.png)
+![Level 3 - Components](docs/c4/main/components.png)
 
 Notes:
 - The **dashboard** (a separate container, shown at Level 2 above) is served by this
@@ -103,7 +105,7 @@ Notes:
 The diagnosis path (`POST /pipeline/run`). Each arrow is the contract the previous stage
 produces and the next one accepts - "stage 1 produces this, stage 2 consumes it":
 
-![Runtime data-flow - stage contracts](docs/c4/dataflow.png)
+![Runtime data-flow - stage contracts](docs/c4/main/dataflow.png)
 
 `target_summary` (from the context-model stage) is also fed into the composer, so the
 recommendation is grounded in measured performance, and it drives the dashboard KPI cards.
@@ -114,7 +116,7 @@ Anomaly detection is **input to output only** - PCIL never writes to the shop-fl
 The engineer calls the API and writes the returned score back themselves (only they know
 the row mapping):
 
-![Anomaly scoring flow](docs/c4/anomalyflow.png)
+![Anomaly scoring flow](docs/c4/main/anomalyflow.png)
 
 #### Contract table
 

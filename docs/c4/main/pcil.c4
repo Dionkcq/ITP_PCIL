@@ -11,9 +11,13 @@ specification {
     }
   }
   element system
+  element externalSystem {
+    style {
+      color slate
+    }
+  }
   element container
   element component
-  tag external
 }
 
 model {
@@ -21,16 +25,13 @@ model {
     description 'Runs diagnoses, uploads CSVs, trains and scores anomaly models'
   }
 
-  gemini = system 'Google Gemini API' {
-    #external
+  gemini = externalSystem 'Google Gemini API' {
     description 'LLM (gemini-2.5-flash) that writes the operator recommendation'
   }
-  shop = system 'Shop-floor data source' {
-    #external
+  shop = externalSystem 'Shop-floor data source' {
     description 'Engineer-owned. On main: a CSV slice in ./data. Postgres planned'
   }
-  docs = system 'Maintenance documents' {
-    #external
+  docs = externalSystem 'Maintenance documents' {
     description 'DOCX error / cause / recovery references used by RAG'
   }
 
@@ -114,22 +115,26 @@ model {
 
 views {
   view index {
-    title 'PCIL - System Context (Level 1)'
+    title 'PCIL (main / CSV) - System Context (Level 1)'
+    description 'Who uses PCIL and the external systems it depends on. External systems are shown in grey.'
     include *
   }
 
   view containers of pcil {
-    title 'PCIL - Containers (Level 2)'
+    title 'PCIL (main / CSV) - Containers (Level 2)'
+    description 'The independently runnable pieces inside PCIL and the data handed between them.'
     include *
   }
 
   view components of orchestrator {
-    title 'Orchestrator - Components (Level 3)'
+    title 'Orchestrator (main / CSV) - Components (Level 3)'
+    description 'The code modules inside the single FastAPI orchestrator container.'
     include *
   }
 
   dynamic view dataflow {
     title 'Runtime data-flow - the stage contracts (POST /pipeline/run)'
+    description 'Numbered walkthrough of one diagnosis: each step is the contract the previous stage produces and the next one consumes.'
     operator -> api 'POST /pipeline/run (config recipe)'
     api -> trigger 'pull slice'
     trigger -> shop 'read CSV slice'
@@ -145,6 +150,7 @@ views {
 
   dynamic view anomalyflow {
     title 'Anomaly scoring - input to output only (POST /anomaly/score)'
+    description 'The engineer-facing anomaly API: PCIL returns scores and never writes to the shop-floor data itself.'
     operator -> api 'POST /anomaly/score (raw rows + model_type)'
     api -> anomaly 'dispatch by model_type'
     anomaly -> rtdata 'load matching .pkl bundle'
