@@ -1,0 +1,40 @@
+# ============================================================
+# SIT ITP Test Scenario 9 (Winardi, 2026-07-06) — GENERATED
+# by sit_testing/generate_recipes.py from 'SIT ITP Test Scenarios.xlsx'.
+# Expected result (verbatim from the workbook):
+#   Motor slippage drops actual conveyor speeds below the target,
+#   restricting plant throughput. Positive correlation with
+#   actual_conveyor_rpm.
+# Data: table scenario_9 (restored from itp_test_scenarios.sql).
+# ============================================================
+
+system: sit_scenarios
+
+pipeline:
+  output_dir: "output"
+
+trigger:
+  source_type: postgres
+  table: scenario_9
+  mode: "all"
+  start_time: null
+  end_time: null
+  last_n: null
+
+input:
+  timestamp_column: timestamp
+
+  numerical_features:
+    - target_conveyor_rpm
+    - actual_conveyor_rpm
+    - pack_queue_count
+
+  categorical_features: []
+
+  targets:
+    - line_throughput_units_hr
+
+feature_descriptions:
+  target_conveyor_rpm: "Target conveyor (RPM) over the window."
+  actual_conveyor_rpm: "Actual conveyor (RPM) over the window."
+  pack_queue_count: "Pack queue (count) over the window."

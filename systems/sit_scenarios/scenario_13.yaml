@@ -1,0 +1,41 @@
+# ============================================================
+# SIT ITP Test Scenario 13 (Winardi, 2026-07-06) — GENERATED
+# by sit_testing/generate_recipes.py from 'SIT ITP Test Scenarios.xlsx'.
+# Expected result (verbatim from the workbook):
+#   Powering up multiple induction furnaces inside peak municipal tariff
+#   brackets spikes line costs. Shared high attributions between
+#   is_peak_tariff_window and furnace indicators.
+# Data: table scenario_13 (restored from itp_test_scenarios.sql).
+# ============================================================
+
+system: sit_scenarios
+
+pipeline:
+  output_dir: "output"
+
+trigger:
+  source_type: postgres
+  table: scenario_13
+  mode: "all"
+  start_time: null
+  end_time: null
+  last_n: null
+
+input:
+  timestamp_column: timestamp
+
+  numerical_features:
+    - furnace_1_active
+    - furnace_2_active
+    - is_peak_tariff_window
+
+  categorical_features: []
+
+  targets:
+    - electricity_cost_per_hour
+    - total_kw_draw
+
+feature_descriptions:
+  furnace_1_active: "Furnace 1 active over the window."
+  furnace_2_active: "Furnace 2 active over the window."
+  is_peak_tariff_window: "Binary flag (0 or 1): peak tariff window."

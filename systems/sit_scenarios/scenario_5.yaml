@@ -1,0 +1,41 @@
+# ============================================================
+# SIT ITP Test Scenario 5 (Winardi, 2026-07-06) — GENERATED
+# by sit_testing/generate_recipes.py from 'SIT ITP Test Scenarios.xlsx'.
+# Expected result (verbatim from the workbook):
+#   As an etching bath ages, impurities build up linearly, causing yield
+#   to drift downwards. Strong negative coefficient for bath_age_hours.
+# Data: table scenario_5 (restored from itp_test_scenarios.sql).
+# ============================================================
+
+system: sit_scenarios
+
+pipeline:
+  output_dir: "output"
+
+trigger:
+  source_type: postgres
+  table: scenario_5
+  mode: "all"
+  start_time: null
+  end_time: null
+  last_n: null
+
+input:
+  timestamp_column: timestamp
+
+  numerical_features:
+    - bath_age_hours
+    - bath_temp_c
+    - fluid_flow_rate_lpm
+    - defect_count
+
+  categorical_features: []
+
+  targets:
+    - first_time_yield_pct
+
+feature_descriptions:
+  bath_age_hours: "Bath age (hours) over the window."
+  bath_temp_c: "Bath temp (degrees Celsius) over the window."
+  fluid_flow_rate_lpm: "Fluid flow rate (litres per minute) over the window."
+  defect_count: "Defect (count) over the window."

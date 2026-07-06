@@ -1,0 +1,40 @@
+# ============================================================
+# SIT ITP Test Scenario 17 (Winardi, 2026-07-06) — GENERATED
+# by sit_testing/generate_recipes.py from 'SIT ITP Test Scenarios.xlsx'.
+# Expected result (verbatim from the workbook):
+#   The supply chain alternates raw casting providers; Supplier B's
+#   dimensions routinely fail inspection. Strong positive attribution on
+#   indicator is_supplier_b.
+# Data: table scenario_17 (restored from itp_test_scenarios.sql).
+# ============================================================
+
+system: sit_scenarios
+
+pipeline:
+  output_dir: "output"
+
+trigger:
+  source_type: postgres
+  table: scenario_17
+  mode: "all"
+  start_time: null
+  end_time: null
+  last_n: null
+
+input:
+  timestamp_column: timestamp
+
+  numerical_features:
+    - is_supplier_b
+    - is_air_freight
+    - ambient_storage_temp_c
+
+  categorical_features: []
+
+  targets:
+    - defective_parts_per_1k
+
+feature_descriptions:
+  is_supplier_b: "Binary flag (0 or 1): supplier b."
+  is_air_freight: "Binary flag (0 or 1): air freight."
+  ambient_storage_temp_c: "Ambient storage temp (degrees Celsius) over the window."

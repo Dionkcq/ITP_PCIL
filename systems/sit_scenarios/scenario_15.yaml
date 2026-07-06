@@ -1,0 +1,40 @@
+# ============================================================
+# SIT ITP Test Scenario 15 (Winardi, 2026-07-06) — GENERATED
+# by sit_testing/generate_recipes.py from 'SIT ITP Test Scenarios.xlsx'.
+# Expected result (verbatim from the workbook):
+#   Flow drops slowly, then plummets non-linearly once fluid filter
+#   media hits total structural saturation. Evaluates if the linear
+#   baseline handles exponential behaviors or falls short.
+# Data: table scenario_15 (restored from itp_test_scenarios.sql).
+# ============================================================
+
+system: sit_scenarios
+
+pipeline:
+  output_dir: "output"
+
+trigger:
+  source_type: postgres
+  table: scenario_15
+  mode: "all"
+  start_time: null
+  end_time: null
+  last_n: null
+
+input:
+  timestamp_column: timestamp
+
+  numerical_features:
+    - inlet_pressure_bar
+    - outlet_pressure_bar
+    - pump_amperage
+
+  categorical_features: []
+
+  targets:
+    - pump_flow_rate_lpm
+
+feature_descriptions:
+  inlet_pressure_bar: "Inlet pressure (bar) over the window."
+  outlet_pressure_bar: "Outlet pressure (bar) over the window."
+  pump_amperage: "Pump amperage over the window."

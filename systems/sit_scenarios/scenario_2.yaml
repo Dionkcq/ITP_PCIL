@@ -1,0 +1,41 @@
+# ============================================================
+# SIT ITP Test Scenario 2 (Winardi, 2026-07-06) — GENERATED
+# by sit_testing/generate_recipes.py from 'SIT ITP Test Scenarios.xlsx'.
+# Expected result (verbatim from the workbook):
+#   OEE drops because of a planned changeover. High negative correlation
+#   with planned_changeover_min.
+# Data: table scenario_2 (restored from itp_test_scenarios.sql).
+# ============================================================
+
+system: sit_scenarios
+
+pipeline:
+  output_dir: "output"
+
+trigger:
+  source_type: postgres
+  table: scenario_2
+  mode: "all"
+  start_time: null
+  end_time: null
+  last_n: null
+
+input:
+  timestamp_column: timestamp
+
+  numerical_features:
+    - m1_failure_min
+    - m2_failure_min
+    - planned_changeover_min
+    - scheduled_break_min
+
+  categorical_features: []
+
+  targets:
+    - line_availability_pct
+
+feature_descriptions:
+  m1_failure_min: "M1 failure (minutes) over the window."
+  m2_failure_min: "M2 failure (minutes) over the window."
+  planned_changeover_min: "Planned changeover (minutes) over the window."
+  scheduled_break_min: "Scheduled break (minutes) over the window."

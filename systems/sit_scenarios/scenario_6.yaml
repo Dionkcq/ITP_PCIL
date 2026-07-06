@@ -1,0 +1,40 @@
+# ============================================================
+# SIT ITP Test Scenario 6 (Winardi, 2026-07-06) — GENERATED
+# by sit_testing/generate_recipes.py from 'SIT ITP Test Scenarios.xlsx'.
+# Expected result (verbatim from the workbook):
+#   Process metrics are great, but a new plastic lot has high moisture
+#   content, spoiling the batch. Strong positive coefficient for
+#   material_moisture_pct.
+# Data: table scenario_6 (restored from itp_test_scenarios.sql).
+# ============================================================
+
+system: sit_scenarios
+
+pipeline:
+  output_dir: "output"
+
+trigger:
+  source_type: postgres
+  table: scenario_6
+  mode: "all"
+  start_time: null
+  end_time: null
+  last_n: null
+
+input:
+  timestamp_column: timestamp
+
+  numerical_features:
+    - material_moisture_pct
+    - barrel_temp_c
+    - injection_pressure_bar
+
+  categorical_features: []
+
+  targets:
+    - scrap_rate_pct
+
+feature_descriptions:
+  material_moisture_pct: "Material moisture (percent) over the window."
+  barrel_temp_c: "Barrel temp (degrees Celsius) over the window."
+  injection_pressure_bar: "Injection pressure (bar) over the window."

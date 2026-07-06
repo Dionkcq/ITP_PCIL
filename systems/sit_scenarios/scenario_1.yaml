@@ -1,0 +1,41 @@
+# ============================================================
+# SIT ITP Test Scenario 1 (Winardi, 2026-07-06) — GENERATED
+# by sit_testing/generate_recipes.py from 'SIT ITP Test Scenarios.xlsx'.
+# Expected result (verbatim from the workbook):
+#   A major mechanical breakdown on Machine 1 sinks overall line
+#   efficiency. Deep negative coefficient for m1_downtime_min.
+# Data: table scenario_1 (restored from itp_test_scenarios.sql).
+# ============================================================
+
+system: sit_scenarios
+
+pipeline:
+  output_dir: "output"
+
+trigger:
+  source_type: postgres
+  table: scenario_1
+  mode: "all"
+  start_time: null
+  end_time: null
+  last_n: null
+
+input:
+  timestamp_column: timestamp
+
+  numerical_features:
+    - m1_downtime_min
+    - m2_downtime_min
+    - m3_downtime_min
+    - planned_maintenance_min
+
+  categorical_features: []
+
+  targets:
+    - line_oee_pct
+
+feature_descriptions:
+  m1_downtime_min: "M1 downtime (minutes) over the window."
+  m2_downtime_min: "M2 downtime (minutes) over the window."
+  m3_downtime_min: "M3 downtime (minutes) over the window."
+  planned_maintenance_min: "Planned maintenance (minutes) over the window."

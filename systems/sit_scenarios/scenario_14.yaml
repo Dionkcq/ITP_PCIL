@@ -1,0 +1,40 @@
+# ============================================================
+# SIT ITP Test Scenario 14 (Winardi, 2026-07-06) — GENERATED
+# by sit_testing/generate_recipes.py from 'SIT ITP Test Scenarios.xlsx'.
+# Expected result (verbatim from the workbook):
+#   Lubrication runs entirely empty over a 1000-day cycle, causing
+#   catastrophic motor friction and shaking. Large inverse negative
+#   coefficient for lubrication_level_pct.
+# Data: table scenario_14 (restored from itp_test_scenarios.sql).
+# ============================================================
+
+system: sit_scenarios
+
+pipeline:
+  output_dir: "output"
+
+trigger:
+  source_type: postgres
+  table: scenario_14
+  mode: "all"
+  start_time: null
+  end_time: null
+  last_n: null
+
+input:
+  timestamp_column: timestamp
+
+  numerical_features:
+    - lubrication_level_pct
+    - motor_rpm
+    - bearing_temp_c
+
+  categorical_features: []
+
+  targets:
+    - motor_vibration_mm_s
+
+feature_descriptions:
+  lubrication_level_pct: "Lubrication level (percent) over the window."
+  motor_rpm: "Motor (RPM) over the window."
+  bearing_temp_c: "Bearing temp (degrees Celsius) over the window."

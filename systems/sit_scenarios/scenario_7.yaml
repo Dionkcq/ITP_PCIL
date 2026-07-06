@@ -1,0 +1,40 @@
+# ============================================================
+# SIT ITP Test Scenario 7 (Winardi, 2026-07-06) — GENERATED
+# by sit_testing/generate_recipes.py from 'SIT ITP Test Scenarios.xlsx'.
+# Expected result (verbatim from the workbook):
+#   A cutting tool wears down linearly over its lifespan. Roughness
+#   climbs as it hits its wear limit. High positive correlation with
+#   tool_strike_count.
+# Data: table scenario_7 (restored from itp_test_scenarios.sql).
+# ============================================================
+
+system: sit_scenarios
+
+pipeline:
+  output_dir: "output"
+
+trigger:
+  source_type: postgres
+  table: scenario_7
+  mode: "all"
+  start_time: null
+  end_time: null
+  last_n: null
+
+input:
+  timestamp_column: timestamp
+
+  numerical_features:
+    - tool_strike_count
+    - spindle_speed_rpm
+    - feed_rate_mm_min
+
+  categorical_features: []
+
+  targets:
+    - part_surface_roughness_microns
+
+feature_descriptions:
+  tool_strike_count: "Tool strike (count) over the window."
+  spindle_speed_rpm: "Spindle speed (RPM) over the window."
+  feed_rate_mm_min: "Feed rate mm (minutes) over the window."

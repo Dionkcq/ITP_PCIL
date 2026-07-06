@@ -1,0 +1,40 @@
+# ============================================================
+# SIT ITP Test Scenario 16 (Winardi, 2026-07-06) — GENERATED
+# by sit_testing/generate_recipes.py from 'SIT ITP Test Scenarios.xlsx'.
+# Expected result (verbatim from the workbook):
+#   Assembly workers wait idle because older AGV delivery vehicles stall
+#   in charging bays. Target tracks directly with the
+#   agv_in_charging_bay_count.
+# Data: table scenario_16 (restored from itp_test_scenarios.sql).
+# ============================================================
+
+system: sit_scenarios
+
+pipeline:
+  output_dir: "output"
+
+trigger:
+  source_type: postgres
+  table: scenario_16
+  mode: "all"
+  start_time: null
+  end_time: null
+  last_n: null
+
+input:
+  timestamp_column: timestamp
+
+  numerical_features:
+    - agv_in_charging_bay_count
+    - material_requests_filed
+    - is_crane_operational
+
+  categorical_features: []
+
+  targets:
+    - assembly_station_idle_min
+
+feature_descriptions:
+  agv_in_charging_bay_count: "Agv in charging bay (count) over the window."
+  material_requests_filed: "Material requests filed over the window."
+  is_crane_operational: "Binary flag (0 or 1): crane operational."

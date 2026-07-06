@@ -1,0 +1,40 @@
+# ============================================================
+# SIT ITP Test Scenario 11 (Winardi, 2026-07-06) — GENERATED
+# by sit_testing/generate_recipes.py from 'SIT ITP Test Scenarios.xlsx'.
+# Expected result (verbatim from the workbook):
+#   A press gets too hot due to peak seasonal heat, causing automation
+#   to throttle down stroke speeds. Negative coefficient with
+#   oil_temperature_c.
+# Data: table scenario_11 (restored from itp_test_scenarios.sql).
+# ============================================================
+
+system: sit_scenarios
+
+pipeline:
+  output_dir: "output"
+
+trigger:
+  source_type: postgres
+  table: scenario_11
+  mode: "all"
+  start_time: null
+  end_time: null
+  last_n: null
+
+input:
+  timestamp_column: timestamp
+
+  numerical_features:
+    - oil_temperature_c
+    - coolant_flow_gpm
+    - ambient_temp_c
+
+  categorical_features: []
+
+  targets:
+    - strokes_per_minute
+
+feature_descriptions:
+  oil_temperature_c: "Oil temperature (degrees Celsius) over the window."
+  coolant_flow_gpm: "Coolant flow (gallons per minute) over the window."
+  ambient_temp_c: "Ambient temp (degrees Celsius) over the window."

@@ -1,0 +1,40 @@
+# ============================================================
+# SIT ITP Test Scenario 10 (Winardi, 2026-07-06) — GENERATED
+# by sit_testing/generate_recipes.py from 'SIT ITP Test Scenarios.xlsx'.
+# Expected result (verbatim from the workbook):
+#   An uncertified trainee takes over a manual line station, expanding
+#   cycle times. Tests binary feature tracking; is_trainee_operator
+#   should hold heavy positive weight.
+# Data: table scenario_10 (restored from itp_test_scenarios.sql).
+# ============================================================
+
+system: sit_scenarios
+
+pipeline:
+  output_dir: "output"
+
+trigger:
+  source_type: postgres
+  table: scenario_10
+  mode: "all"
+  start_time: null
+  end_time: null
+  last_n: null
+
+input:
+  timestamp_column: timestamp
+
+  numerical_features:
+    - is_trainee_operator
+    - machine_warmup_min
+    - part_weight_grams
+
+  categorical_features: []
+
+  targets:
+    - average_cycle_time_sec
+
+feature_descriptions:
+  is_trainee_operator: "Binary flag (0 or 1): trainee operator."
+  machine_warmup_min: "Machine warmup (minutes) over the window."
+  part_weight_grams: "Part weight (grams) over the window."

@@ -1,0 +1,41 @@
+# ============================================================
+# SIT ITP Test Scenario 19 (Winardi, 2026-07-06) — GENERATED
+# by sit_testing/generate_recipes.py from 'SIT ITP Test Scenarios.xlsx'.
+# Expected result (verbatim from the workbook):
+#   Line 1 looks horribly error-prone globally, but only because it gets
+#   assigned highly complex items. The system must isolate and evaluate
+#   product_complexity_scale to prevent falsely blaming the asset line
+#   path. Correlation with both is_line_1 and product_complexity_scale.
+# Data: table scenario_19 (restored from itp_test_scenarios.sql).
+# ============================================================
+
+system: sit_scenarios
+
+pipeline:
+  output_dir: "output"
+
+trigger:
+  source_type: postgres
+  table: scenario_19
+  mode: "all"
+  start_time: null
+  end_time: null
+  last_n: null
+
+input:
+  timestamp_column: timestamp
+
+  numerical_features:
+    - is_line_1
+    - product_complexity_scale
+    - run_length_hours
+
+  categorical_features: []
+
+  targets:
+    - defect_rate_pct
+
+feature_descriptions:
+  is_line_1: "Binary flag (0 or 1): line 1."
+  product_complexity_scale: "Product complexity scale over the window."
+  run_length_hours: "Run length (hours) over the window."

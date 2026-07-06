@@ -1,0 +1,38 @@
+# ============================================================
+# SIT ITP Test Scenario 20 (Winardi, 2026-07-06) — GENERATED
+# by sit_testing/generate_recipes.py from 'SIT ITP Test Scenarios.xlsx'.
+# Expected result (verbatim from the workbook):
+#   Correlation with gripper_wear_index.
+# Data: table scenario_20 (restored from itp_test_scenarios.sql).
+# ============================================================
+
+system: sit_scenarios
+
+pipeline:
+  output_dir: "output"
+
+trigger:
+  source_type: postgres
+  table: scenario_20
+  mode: "all"
+  start_time: null
+  end_time: null
+  last_n: null
+
+input:
+  timestamp_column: timestamp
+
+  numerical_features:
+    - motor_current_amps
+    - pneumatic_psi
+    - gripper_wear_index
+
+  categorical_features: []
+
+  targets:
+    - palletizer_cycle_time_sec
+
+feature_descriptions:
+  motor_current_amps: "Motor current (amperes) over the window."
+  pneumatic_psi: "Pneumatic (PSI) over the window."
+  gripper_wear_index: "Gripper wear index over the window."

@@ -1,0 +1,38 @@
+# ============================================================
+# SIT ITP Test Scenario 8 (Winardi, 2026-07-06) — GENERATED
+# by sit_testing/generate_recipes.py from 'SIT ITP Test Scenarios.xlsx'.
+# Expected result (verbatim from the workbook):
+#   High humidity alone or low pressure alone is fine, but together they
+#   cause an explosion of defects. Correlation with both
+#   ambient_humidity_pct and hydraulic_pressure_bar.
+# Data: table scenario_8 (restored from itp_test_scenarios.sql).
+# ============================================================
+
+system: sit_scenarios
+
+pipeline:
+  output_dir: "output"
+
+trigger:
+  source_type: postgres
+  table: scenario_8
+  mode: "all"
+  start_time: null
+  end_time: null
+  last_n: null
+
+input:
+  timestamp_column: timestamp
+
+  numerical_features:
+    - ambient_humidity_pct
+    - hydraulic_pressure_bar
+
+  categorical_features: []
+
+  targets:
+    - defect_density_scale
+
+feature_descriptions:
+  ambient_humidity_pct: "Ambient humidity (percent) over the window."
+  hydraulic_pressure_bar: "Hydraulic pressure (bar) over the window."
