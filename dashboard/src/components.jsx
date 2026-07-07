@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 // ── Header meta ────────────────────────────────────────────────────
 
@@ -34,8 +34,39 @@ const TARGET_LABELS = {
   oee: 'OEE',
 }
 
-const pct = (v) => `${(v * 100).toFixed(1)}%`
-const tone = (v) => (v >= 0.85 ? 'good' : v >= 0.6 ? 'warn' : 'bad')
+function isPercentTarget(name) {
+  return (
+    name === 'availability' ||
+    name === 'performance' ||
+    name === 'quality' ||
+    name === 'oee' ||
+    name.endsWith('_pct') ||
+    name.endsWith('_percent')
+  )
+}
+
+export function displayValue(name, value) {
+  if (value == null || Number.isNaN(Number(value))) return '—'
+  if (isPercentTarget(name)) {
+    // Some recipes store KPIs as fractions (0.824 = 82.4%); SIT scenarios use
+    // percent-point columns (82.4 = 82.4%). Display both as human percentages.
+    const percent = Math.abs(value) <= 1.5 ? value * 100 : value
+    return `${percent.toFixed(1)}%`
+  }
+  return Number(value).toFixed(2)
+}
+
+function gaugeValue(name, value) {
+  if (value == null || Number.isNaN(Number(value))) return 0
+  if (!isPercentTarget(name)) return 0
+  return Math.abs(value) <= 1.5 ? value : value / 100
+}
+
+function targetTone(name, value) {
+  const v = gaugeValue(name, value)
+  if (!isPercentTarget(name)) return 'neutral'
+  return v >= 0.85 ? 'good' : v >= 0.6 ? 'warn' : 'bad'
+}
 
 // Small SVG ring gauge — fill fraction matches the KPI value.
 function Ring({ value }) {
@@ -66,12 +97,12 @@ export function KpiCards({ summary }) {
   return (
     <section className="kpi-row">
       {ordered.map((k) => (
-        <div key={k} className={`kpi-card ${tone(summary[k])}`}>
+        <div key={k} className={`kpi-card ${targetTone(k, summary[k])}`}>
           <div className="kpi-body">
-            <div className="kpi-value">{pct(summary[k])}</div>
+            <div className="kpi-value">{displayValue(k, summary[k])}</div>
             <div className="kpi-label">{TARGET_LABELS[k] ?? k}</div>
           </div>
-          <Ring value={summary[k]} />
+          <Ring value={gaugeValue(k, summary[k])} />
         </div>
       ))}
     </section>
@@ -124,6 +155,18 @@ export function ImpactBars({ impacts }) {
   const initial =
     blocks.find((b) => b.target === 'oee')?.target ?? blocks[0]?.target ?? ''
   const [target, setTarget] = useState(initial)
+
+  // The selected target is component state, so it survives between diagnosis
+  // runs. If the next run has a different target set (e.g. scenario_2
+  // line_availability_pct -> scenario_1 line_oee_pct), reset the selection to
+  // a valid block. Otherwise the native select may visually show the first
+  // option while React state still points at a stale target, producing the
+  // misleading "No ranked impacts" message.
+  useEffect(() => {
+    if (!blocks.some((b) => b.target === target)) {
+      setTarget(initial)
+    }
+  }, [blocks, initial, target])
 
   const block = blocks.find((b) => b.target === target)
   const feats = block?.ranked_feature_impacts ?? []

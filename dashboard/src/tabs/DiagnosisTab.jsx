@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { listConfigs, runDiagnosis, runDiagnosisUpload, saveCsv } from '../api.js'
-import { DiagnosisResult } from '../components.jsx'
+import { DiagnosisResult, displayValue } from '../components.jsx'
 
 // Fallback while /configs hasn't answered (or on older orchestrators).
 const CONFIGS = [
@@ -168,7 +168,7 @@ export default function DiagnosisTab() {
               <span className="h-oee">
                 OEE{' '}
                 {h.data.target_summary?.oee != null
-                  ? `${(h.data.target_summary.oee * 100).toFixed(1)}%`
+                  ? displayValue('oee', h.data.target_summary.oee)
                   : '—'}
               </span>
             </button>
