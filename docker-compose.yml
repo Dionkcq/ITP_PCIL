@@ -52,6 +52,11 @@ services:
       # env_file: a full .env could carry PCIL_PROJECT_ROOT, which must stay
       # at the image's baked-in /app inside the container.
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      # Alternative LLM provider (OpenRouter, OpenAI-compatible). When set it
+      # TAKES PRECEDENCE over GEMINI_API_KEY — handy while the Gemini key is
+      # unavailable. OPENROUTER_MODEL is optional (default google/gemini-2.5-flash).
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-}
       DATABASE_URL: postgresql://${POSTGRES_USER:-pcil}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-pcil}
       RAG_BACKEND: ${RAG_BACKEND:-postgres}
       RAG_AUTO_INGEST: ${RAG_AUTO_INGEST:-true}

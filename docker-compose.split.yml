@@ -49,6 +49,10 @@ services:
       - "${PCIL_PORT:-8000}:8000"
     environment:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      # OpenRouter (OpenAI-compatible) LLM alternative; takes precedence over
+      # GEMINI_API_KEY when set. OPENROUTER_MODEL optional.
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-}
       DATABASE_URL: postgresql://${POSTGRES_USER:-pcil}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-pcil}
       # Pipeline runs the full pgvector hybrid RAG (BM25 + dense embeddings + RRF).
       RAG_BACKEND: ${RAG_BACKEND:-postgres}

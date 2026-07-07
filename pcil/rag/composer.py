@@ -1,19 +1,35 @@
 """
 RAG LLM composer - turns impacts + recovery records into an operator
-recommendation using the Gemini API.
+recommendation.
+
+Two LLM providers are supported, tried in PRIORITY ORDER (no code change to
+switch, no beta headers):
+  * Google Gemini (GEMINI_API_KEY)  - PRIMARY: the cheap, validated default.
+  * OpenRouter (OPENROUTER_API_KEY) - FALLBACK: OpenAI-compatible; used only
+    when Gemini is configured but fails, or when Gemini isn't configured.
+Only ONE provider is called on success, so a working Gemini call never also
+spends OpenRouter tokens. Override the model per provider with
+GEMINI_MODEL / OPENROUTER_MODEL.
 """
 from __future__ import annotations
 
+import logging
 import os
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from pcil.rag.loader import RecoveryRecord
 
-# Cap the Gemini HTTP round-trip (milliseconds). On a firewalled network
-# the connection can be blackholed rather than refused; without a timeout
-# the request hangs instead of falling back to the records-only response.
+logger = logging.getLogger(__name__)
+
+# Cap the LLM HTTP round-trip (milliseconds). On a firewalled network the
+# connection can be blackholed rather than refused; without a timeout the
+# request hangs instead of falling back to the records-only response.
 _LLM_TIMEOUT_MS: int = 30_000
+
+_DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+_DEFAULT_OPENROUTER_MODEL = "google/gemini-2.5-flash"
+_OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 
 def compose_recommendation(
@@ -23,7 +39,7 @@ def compose_recommendation(
     target_summary: dict[str, float] | None = None,
     signal_summary: dict | None = None,
     baseline_comparison: dict | None = None,
-    model: str = "gemini-2.5-flash",
+    model: str | None = None,
 ) -> str:
     """Generate a plain-English operator recommendation.
 
@@ -50,7 +66,9 @@ def compose_recommendation(
         baseline ({"features": {feat: {z_score, direction}}}). When present,
         feature lines note how far each feature sits from normal.
     model:
-        Gemini model name. Defaults to "gemini-2.5-flash".
+        Explicit model name. When None (the default) each provider resolves
+        its own: GEMINI_MODEL or gemini-2.5-flash for Gemini, OPENROUTER_MODEL
+        or google/gemini-2.5-flash for OpenRouter.
 
     Returns
     -------
@@ -62,10 +80,11 @@ def compose_recommendation(
     ValueError
         If `records` is empty.
     RuntimeError
-        If GEMINI_API_KEY is unset, the API call fails, or the model returns
-        an empty response. The orchestrator catches these and degrades to a
-        records-only response tagged recommendation_status="llm_unavailable",
-        keeping failures distinguishable from real recommendations.
+        If no LLM key is set, or every configured provider fails / returns
+        empty (Gemini is tried first, OpenRouter is the fallback). The
+        orchestrator catches these and degrades to a records-only response
+        tagged recommendation_status="llm_unavailable", keeping failures
+        distinguishable from real recommendations.
     """
     if not records:
         # The orchestrator short-circuits the no-records case (and tags it
@@ -73,15 +92,6 @@ def compose_recommendation(
         # caller. Raise rather than return a string so "no recommendation"
         # is never mistaken for a real one.
         raise ValueError("no recovery records to compose from")
-
-    # .strip() so a stray space/newline in the .env (e.g. "KEY = value") does
-    # not slip through as a non-empty-but-unusable key.
-    api_key = (os.environ.get("GEMINI_API_KEY") or "").strip()
-    if not api_key:
-        raise RuntimeError(
-            "GEMINI_API_KEY environment variable is not set. "
-            "Set it before starting the orchestrator."
-        )
 
     prompt = _build_prompt(
         impacts,
@@ -91,12 +101,46 @@ def compose_recommendation(
         baseline_comparison=baseline_comparison,
     )
 
-    # No try/except here: failures (missing key, no internet, timeout,
-    # empty/safety-filtered response) propagate so the orchestrator can
-    # degrade with a machine-readable recommendation_status instead of the
-    # caller having to sniff the returned text for marker words.
+    # Provider selection: try Gemini FIRST, fall back to OpenRouter only if
+    # Gemini is configured but fails. Only one provider is called on success,
+    # so a working Gemini call never also spends OpenRouter tokens. .strip()
+    # defends against a stray space/newline in the .env (e.g. "KEY = value")
+    # slipping through as a non-empty-but-unusable key.
+    gemini_key = (os.environ.get("GEMINI_API_KEY") or "").strip()
+    openrouter_key = (os.environ.get("OPENROUTER_API_KEY") or "").strip()
+
+    if not gemini_key and not openrouter_key:
+        raise RuntimeError(
+            "No LLM API key set. Set GEMINI_API_KEY (primary) or "
+            "OPENROUTER_API_KEY (fallback) before starting the orchestrator."
+        )
+
+    if gemini_key:
+        try:
+            return _compose_gemini(prompt, gemini_key, model)
+        except Exception as gemini_error:  # noqa: BLE001
+            if not openrouter_key:
+                # No fallback configured: let the exception propagate so the
+                # orchestrator degrades to recommendation_status=llm_unavailable.
+                raise
+            logger.warning(
+                "Gemini composition failed (%s); falling back to OpenRouter. "
+                "Fix the Gemini key/billing to stop spending OpenRouter "
+                "tokens. %s",
+                type(gemini_error).__name__, gemini_error,
+            )
+
+    # Either Gemini isn't configured, or it failed and OpenRouter is the
+    # fallback. An OpenRouter failure propagates so the orchestrator degrades
+    # to recommendation_status="llm_unavailable".
+    return _compose_openrouter(prompt, openrouter_key, model)
+
+
+def _compose_gemini(prompt: str, api_key: str, model: str | None) -> str:
+    """Call Google Gemini via the native google-genai SDK."""
     from google import genai  # noqa: PLC0415
 
+    model = model or os.environ.get("GEMINI_MODEL") or _DEFAULT_GEMINI_MODEL
     client = genai.Client(
         api_key=api_key,
         http_options={"timeout": _LLM_TIMEOUT_MS},
@@ -107,6 +151,39 @@ def compose_recommendation(
             "Gemini returned an empty response (possibly safety-filtered)."
         )
     return response.text.strip()
+
+
+def _compose_openrouter(prompt: str, api_key: str, model: str | None) -> str:
+    """Call OpenRouter's OpenAI-compatible chat-completions endpoint.
+
+    OpenRouter can route to many models; pick one with OPENROUTER_MODEL
+    (default google/gemini-2.5-flash, so behaviour matches the Gemini path).
+    Uses httpx, already a dependency, so no extra package is needed.
+    """
+    import httpx  # noqa: PLC0415
+
+    model = model or os.environ.get("OPENROUTER_MODEL") or _DEFAULT_OPENROUTER_MODEL
+    response = httpx.post(
+        _OPENROUTER_URL,
+        headers={"Authorization": f"Bearer {api_key}"},
+        json={
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+        },
+        timeout=_LLM_TIMEOUT_MS / 1000,
+    )
+    if response.status_code != 200:
+        # Surface OpenRouter's JSON error body (invalid key, no credits, bad
+        # model id, ...) so the reason reaches the logs, not just a status.
+        raise RuntimeError(
+            f"OpenRouter HTTP {response.status_code}: {response.text[:200]}"
+        )
+    choices = response.json().get("choices") or []
+    text = (choices[0].get("message", {}).get("content") if choices else "") or ""
+    text = text.strip()
+    if not text:
+        raise RuntimeError("OpenRouter returned an empty response.")
+    return text
 
 
 def _build_prompt(
